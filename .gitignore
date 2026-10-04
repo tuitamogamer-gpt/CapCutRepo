@@ -3,3 +3,4 @@ dist/
 screenshots/
 *.tsbuildinfo
 .openai/*.tar.gz
+.vercel/

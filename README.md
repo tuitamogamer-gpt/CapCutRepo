@@ -20,6 +20,12 @@ npm run preview
 
 The build command checks TypeScript and creates a production bundle in `dist/`. Serve that directory with any static web server. No API keys, server application, or database service are required.
 
+## Vercel deployment
+
+The repository includes `vercel.json` for Vite: `npm ci`, `npm run build`, and output directory `dist`. No environment variables are required. Connect the repository in Vercel and use `main` as the production branch; subsequent pushes build automatically.
+
+Project data is stored per browser origin. To move a project from the previous Sites address to the Vercel address, download its `.capcut.json` backup on Sites and open that file in the Vercel editor.
+
 ## Working features
 
 - Import local images, video, and audio with the file picker or drag and drop. Generate video thumbnails, search and sort the media library, and add assets by clicking or dragging them onto the timeline.

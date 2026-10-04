@@ -4,7 +4,6 @@ import {
   ArrowUpFromLine,
   AudioLines,
   Check,
-  ChevronDown,
   Film,
   Image as ImageIcon,
   Info,
@@ -21,6 +20,7 @@ import {
   Layers,
 } from "lucide-react";
 import { DEMO_ASSETS } from "../demo";
+import type { MediaImportProgress } from "../mediaImport";
 import {
   DEFAULT_CLIP,
   FILTERS,
@@ -41,6 +41,7 @@ interface MediaLibraryProps {
   activeTab: string;
   onRecord?: () => void;
   onAddOverlay?: (asset: Asset) => void;
+  importProgress?: MediaImportProgress | null;
 }
 
 const STICKERS = [
@@ -121,10 +122,12 @@ export default function MediaLibrary({
   activeTab,
   onRecord,
   onAddOverlay,
+  importProgress,
 }: MediaLibraryProps) {
   const [section, setSection] = useState("Your media");
   const [query, setQuery] = useState("");
-  const [sortByName, setSortByName] = useState(false);
+  const [mediaType, setMediaType] = useState<"all" | "video" | "image">("all");
+  const [sortOrder, setSortOrder] = useState("imported");
   const [dropActive, setDropActive] = useState(false);
   const [audioCategory, setAudioCategory] = useState("Music");
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -154,6 +157,13 @@ export default function MediaLibrary({
     clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setRecent(null), 1400);
   }
+  function importSelection(files: FileList | File[]) {
+    if (importProgress) return;
+    setSection("Your media");
+    setMediaType("all");
+    setQuery("");
+    onImport(Array.from(files));
+  }
   function preview(asset: Asset) {
     if (playingId === asset.id) {
       audio.current?.pause();
@@ -172,9 +182,15 @@ export default function MediaLibrary({
   }
   const projectMedia = (section === "Library" ? DEMO_ASSETS : assets).filter(
     (a) =>
-      a.type !== "audio" && a.name.toLowerCase().includes(query.toLowerCase()),
+      a.type !== "audio" &&
+      (mediaType === "all" || a.type === mediaType) &&
+      a.name.toLowerCase().includes(query.trim().toLowerCase()),
   );
-  if (sortByName) projectMedia.sort((a, b) => a.name.localeCompare(b.name));
+  if (sortOrder === "name")
+    projectMedia.sort((a, b) => a.name.localeCompare(b.name));
+  if (sortOrder === "duration")
+    projectMedia.sort((a, b) => b.duration - a.duration);
+  if (sortOrder === "newest") projectMedia.reverse();
   const audioAssets = [
     ...assets,
     ...DEMO_ASSETS.filter((a) => !assets.some((b) => b.id === a.id)),
@@ -212,7 +228,8 @@ export default function MediaLibrary({
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("Files")) {
           event.preventDefault();
-          setDropActive(true);
+          event.dataTransfer.dropEffect = importProgress ? "none" : "copy";
+          if (!importProgress) setDropActive(true);
         }
       }}
       onDragLeave={(event) => {
@@ -222,7 +239,7 @@ export default function MediaLibrary({
       onDrop={(event) => {
         if (event.dataTransfer.files.length) {
           event.preventDefault();
-          onImport(event.dataTransfer.files);
+          importSelection(event.dataTransfer.files);
           setDropActive(false);
         }
       }}
@@ -232,9 +249,10 @@ export default function MediaLibrary({
         type="file"
         accept="video/*,image/*,audio/*"
         multiple
+        disabled={!!importProgress}
         className="library-file-input"
         onChange={(event) => {
-          if (event.target.files?.length) onImport(event.target.files);
+          if (event.target.files?.length) importSelection(event.target.files);
           event.target.value = "";
         }}
       />
@@ -244,6 +262,29 @@ export default function MediaLibrary({
           <Sparkles size={14} />
         </span>
       </div>
+      {importProgress && (
+        <div
+          className="library-import-progress"
+          role="status"
+          aria-live="polite"
+        >
+          <strong>
+            Importing{" "}
+            {Math.min(importProgress.processed + 1, importProgress.total)} of{" "}
+            {importProgress.total}
+          </strong>
+          <span title={importProgress.fileName}>{importProgress.fileName}</span>
+          <progress
+            value={importProgress.processed}
+            max={importProgress.total}
+            aria-label="Media import progress"
+          />
+          <small>
+            {importProgress.imported} imported
+            {importProgress.failed > 0 && ` · ${importProgress.failed} skipped`}
+          </small>
+        </div>
+      )}
       {activeTab === "Media" && (
         <>
           <div className="library-segments">
@@ -260,6 +301,7 @@ export default function MediaLibrary({
           <div className="library-content">
             <button
               className="library-import"
+              disabled={!!importProgress}
               onClick={() => input.current?.click()}
             >
               <Plus size={17} strokeWidth={2.1} /> Import
@@ -273,6 +315,28 @@ export default function MediaLibrary({
               Add videos, photos, and audio
             </span>
             {search("Search media")}
+            <div
+              className="library-media-filters"
+              role="group"
+              aria-label="Filter media by type"
+            >
+              {(
+                [
+                  ["all", "All"],
+                  ["video", "Videos"],
+                  ["image", "Photos"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={mediaType === value ? "active" : ""}
+                  aria-pressed={mediaType === value}
+                  onClick={() => setMediaType(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="library-section-label">
               <span>
                 {section === "Your media"
@@ -280,22 +344,17 @@ export default function MediaLibrary({
                   : "Travel collection"}{" "}
                 <small>{projectMedia.length}</small>
               </span>
-              <button
-                aria-label={
-                  sortByName ? "Sort by import order" : "Sort media by name"
-                }
-                title={
-                  sortByName ? "Sort by import order" : "Sort alphabetically"
-                }
-                onClick={() => setSortByName(!sortByName)}
+              <select
+                className="library-sort"
+                value={sortOrder}
+                aria-label="Sort media"
+                onChange={(event) => setSortOrder(event.target.value)}
               >
-                <ChevronDown
-                  size={13}
-                  style={{
-                    transform: sortByName ? "rotate(180deg)" : undefined,
-                  }}
-                />
-              </button>
+                <option value="imported">Import order</option>
+                <option value="newest">Newest first</option>
+                <option value="name">Name A–Z</option>
+                <option value="duration">Longest first</option>
+              </select>
             </div>
             <div className="media-card-grid">
               {projectMedia.map((asset) => (
@@ -366,10 +425,14 @@ export default function MediaLibrary({
             {projectMedia.length === 0 && (
               <div className="library-empty">
                 <ImageIcon size={28} />
-                <p>{query ? "No matching media" : "Your story starts here"}</p>
+                <p>
+                  {query || mediaType !== "all"
+                    ? "No matching media"
+                    : "Your story starts here"}
+                </p>
                 <span>
-                  {query
-                    ? "Try a different search."
+                  {query || mediaType !== "all"
+                    ? "Try a different search or media type."
                     : "Import a photo or video to get started."}
                 </span>
               </div>
@@ -413,6 +476,7 @@ export default function MediaLibrary({
             )}
             <button
               className="library-secondary"
+              disabled={!!importProgress}
               onClick={() => input.current?.click()}
             >
               <Upload size={14} /> Upload your audio

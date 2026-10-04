@@ -20,6 +20,8 @@ npm run preview
 
 The build command checks TypeScript and creates a production bundle in `dist/`. Serve that directory with any static web server. No API keys, server application, or database service are required.
 
+Run `npm test` for timeline interval tests and Chromium workflow checks. On a machine without Chromium, first run `npx playwright install chromium`; alternatively set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to your browser executable. The test runner starts its own development server on port 4173.
+
 ## Vercel deployment
 
 The repository includes `vercel.json` for Vite: `npm ci`, `npm run build`, and output directory `dist`. No environment variables are required. Connect the repository in Vercel and use `main` as the production branch; subsequent pushes build automatically.
@@ -28,8 +30,9 @@ Project data is stored per browser origin. To move a project from the previous S
 
 ## Working features
 
-- Import local images, video, and audio with the file picker or drag and drop. Generate video thumbnails, search and sort the media library, and add assets by clicking or dragging them onto the timeline.
-- Edit visual media, text/stickers, audio, and picture-in-picture overlays on separate timeline lanes. Move and trim clips, scrub, split, duplicate, delete, snap to boundaries, fit or zoom the timeline, and undo/redo edits.
+- Import local images, video, and audio with the file picker or drag and drop. Batch progress and per-file validation preserve successful imports when another file is damaged or unsupported. Generate proportional thumbnails, filter photos/videos, search, sort by name/duration/import order, and add assets to the timeline.
+- Edit visual media, text/stickers, audio, and picture-in-picture overlays on separate timeline lanes. Move and trim clips, scrub, split, duplicate, delete, snap to boundaries, fit or zoom the timeline, and undo/redo edits. **Ripple delete** closes the deleted clip's empty time on its track; **Close gaps** removes leading and internal gaps on the selected track. Both preserve overlapping media and other tracks, respect track locks, and can be undone.
+- Edit on phones and tablets with a full-width preview, horizontal tool navigation, dismissible media/properties panels, and larger touch controls. Portrait and landscape canvases retain their aspect ratio as the editor resizes. Swipe the timeline toolbar to reveal additional actions on narrow screens.
 - Add named, colored timeline markers; click a marker to seek and double-click it to edit. Preview with audio, mute playback, jump between clips, loop the project, or use fullscreen preview.
 - Change position, scale, rotation, opacity, brightness, contrast, saturation, playback speed, and volume. Flip horizontally or vertically, crop each edge, choose fill or fit, and apply color presets and clip/audio fades.
 - Animate position, scale, rotation, and opacity with editable keyframes and linear interpolation. Add, update, remove, or seek to keyframes in **Inspector → Animation**, or choose zoom, pan, and rise presets. Trim and split operations preserve the sampled motion.
@@ -46,6 +49,8 @@ The Effects and Filters libraries offer color presets. Transitions apply fades a
 ## Projects and media
 
 Edits automatically save to IndexedDB in the current browser. **Menu → My projects** opens the local project library, including each project's media, timeline, and edits. Creating a new project preserves the previous one in that library. Existing installations retain their previous current project: it is migrated into the project library without replacing its edits.
+
+Pending edits are also submitted to local storage when the page is hidden. A failed save is shown in the status bar with a **Download backup** action. An unavailable local database does not silently overwrite an existing project with the demo. Keep a downloaded backup for valuable work; a browser or operating system can interrupt writes when closing a tab.
 
 Saved projects belong to this browser and origin. Clearing site data or using another browser/origin does not retain them. Use **Menu → Download project** or **Ctrl/Cmd + S** for a `.capcut.json` backup, and **Menu → Open project file** to restore it. This JSON format belongs to this application and is not compatible with official CapCut project files.
 
@@ -79,10 +84,11 @@ Export happens in real time: a 16-second project takes approximately 16 seconds 
 | Download project                | Ctrl/Cmd + S               |
 | Step playhead                   | Left / Right arrow         |
 | Jump one second                 | Shift + Left / Right arrow |
+| Close a dialog or mobile panel  | Escape                     |
 
 ## Current limits
 
-This implementation does not provide full CapCut feature parity. AI transcription, automatic speech recognition, cloud sync, accounts, collaboration, background removal, and motion tracking are not included. Captions are created manually or imported from SRT/WebVTT files. Keyframe motion uses linear interpolation. Media import, playback, recording, and export depend on browser codec/API support. The interface is designed primarily for desktop editing.
+This implementation does not provide full CapCut feature parity. AI transcription, automatic speech recognition, cloud sync, accounts, collaboration, background removal, and motion tracking are not included. Captions are created manually or imported from SRT/WebVTT files. Keyframe motion uses linear interpolation. Media import, playback, recording, and export depend on browser codec/API support. Phone/tablet layouts support editing; desktop browsers offer the broadest recording and export support.
 
 ## Bundled asset credits
 

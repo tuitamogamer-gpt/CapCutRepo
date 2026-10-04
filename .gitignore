@@ -4,3 +4,5 @@ screenshots/
 *.tsbuildinfo
 .openai/*.tar.gz
 .vercel/
+test-results/
+playwright-report/

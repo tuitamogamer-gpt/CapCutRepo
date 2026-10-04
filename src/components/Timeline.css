@@ -68,6 +68,16 @@
   color: #29d9c5;
   background: #1d3433;
 }
+.tl-tool-labeled {
+  width: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 10px;
+  white-space: nowrap;
+}
 .tl-divider {
   height: 18px;
   width: 1px;
@@ -651,7 +661,31 @@
     width: 50px;
   }
   .tl-tool {
-    width: 26px;
+    width: 44px;
+    height: 44px;
+  }
+  .tl-tool-labeled {
+    width: auto;
+    min-width: 44px;
+  }
+  .tl-toolbar {
+    height: 54px;
+    min-height: 54px;
+  }
+  .tl-toolbar-group {
+    scrollbar-width: thin;
+    scrollbar-color: #46514f transparent;
+    padding-block: 2px;
+  }
+  .tl-toolbar-group::-webkit-scrollbar {
+    height: 3px;
+  }
+  .tl-toolbar-group::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: #46514f;
+  }
+  .tl-zoom {
+    display: none;
   }
   .tl-tool svg {
     width: 15px;
@@ -662,5 +696,26 @@
   .timeline {
     height: 270px;
     min-height: 270px;
+  }
+}
+@media (max-width: 780px) and (max-height: 740px) {
+  .timeline,
+  .timeline.has-overlay {
+    height: 34dvh;
+    min-height: 0;
+    max-height: 34dvh;
+  }
+  .tl-body {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #46514f transparent;
+  }
+  .tl-track-headers,
+  .tl-scroll {
+    min-height: 218px;
+  }
+  .has-overlay .tl-track-headers,
+  .has-overlay .tl-scroll {
+    min-height: 242px;
   }
 }

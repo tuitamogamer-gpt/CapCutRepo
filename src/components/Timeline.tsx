@@ -28,11 +28,14 @@ import {
   Layers2,
   BookmarkPlus,
   AudioLines,
+  ListStart,
+  BetweenHorizontalStart,
   X,
 } from "lucide-react";
 import type { Asset, Clip, TimelineMarker } from "../types";
 import { DEFAULT_CLIP, formatTime, uid } from "../types";
 import { sliceKeyframes } from "../animation";
+import { closeTrackGaps, rippleDeleteClip } from "../timelineEditing";
 import "./Timeline.css";
 
 export interface TimelineProps {
@@ -57,6 +60,7 @@ export interface TimelineProps {
   onMarkersChange?: (markers: TimelineMarker[]) => void;
   onAddOverlay?: () => void;
   onExtractAudio?: () => void;
+  onNotify?: (message: string) => void;
 }
 
 const ROWS = [
@@ -164,6 +168,7 @@ export default function Timeline({
   onMarkersChange,
   onAddOverlay,
   onExtractAudio,
+  onNotify,
 }: TimelineProps) {
   const [zoom, setZoom] = useState(1);
   const [snapping, setSnapping] = useState(true);
@@ -207,6 +212,10 @@ export default function Timeline({
   const selectedLocked = selectedClip
     ? locked.includes(selectedClip.track)
     : false;
+  const gapEdit = useMemo(
+    () => (selectedClip ? closeTrackGaps(clips, selectedClip.track) : null),
+    [clips, selectedClip],
+  );
   const majorStep = zoom < 0.65 ? 10 : zoom > 1.7 ? 2 : 5;
 
   useEffect(() => () => dragCleanup.current?.(), []);
@@ -504,6 +513,31 @@ export default function Timeline({
     setEditingMarker(null);
   }
 
+  function rippleDelete() {
+    if (!selectedClip || selectedLocked) return;
+    const result = rippleDeleteClip(clips, selectedClip.id);
+    onChange(result.clips);
+    onSelect(null);
+    onNotify?.(
+      `Ripple deleted ${selectedClip.name}${
+        result.removedTime > 0
+          ? ` · closed ${result.removedTime.toFixed(2)}s`
+          : " · overlapping clips preserved"
+      }`,
+    );
+  }
+
+  function closeGaps() {
+    if (!selectedClip || selectedLocked || !gapEdit || !gapEdit.removedTime)
+      return;
+    onChange(gapEdit.clips);
+    const trackName =
+      ROWS.find((row) => row.track === selectedClip.track)?.name || "Selected";
+    onNotify?.(
+      `Closed ${gapEdit.removedTime.toFixed(2)}s of gaps on the ${trackName.toLowerCase()} track`,
+    );
+  }
+
   return (
     <section
       className={`timeline${hasOverlay ? " has-overlay" : ""}`}
@@ -547,6 +581,26 @@ export default function Timeline({
           >
             <Trash2 size={17} />
           </ToolButton>
+          <button
+            className="tl-tool tl-tool-labeled"
+            title="Delete selected clip and close its empty time on this track"
+            aria-label="Ripple delete selected clip"
+            disabled={!selectedClip || selectedLocked}
+            onClick={rippleDelete}
+          >
+            <BetweenHorizontalStart size={15} />
+            <span>Ripple delete</span>
+          </button>
+          <button
+            className="tl-tool tl-tool-labeled"
+            title="Remove leading and internal gaps on the selected track; overlapping clips stay together"
+            aria-label="Close gaps on selected track"
+            disabled={!selectedClip || selectedLocked || !gapEdit?.removedTime}
+            onClick={closeGaps}
+          >
+            <ListStart size={16} />
+            <span>Close gaps</span>
+          </button>
           <span className="tl-divider" />
           <ToolButton
             label={snapping ? "Disable snapping" : "Enable snapping"}

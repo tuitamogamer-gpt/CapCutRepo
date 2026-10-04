@@ -41,6 +41,7 @@ import {
   Camera,
   Layers,
   Scissors,
+  AlertCircle,
 } from "lucide-react";
 import type { Clip, Asset, Project } from "./types";
 import {
@@ -69,6 +70,8 @@ import {
 import ProjectLibrary from "./components/ProjectLibrary";
 import CaptionsPanel from "./components/CaptionsPanel";
 import RecorderPanel from "./components/RecorderPanel";
+import { importMediaFiles } from "./mediaImport";
+import type { MediaImportProgress } from "./mediaImport";
 
 const NAV = [
   { name: "Media", icon: Film },
@@ -203,14 +206,25 @@ function Preview({
   onChange: (id: string, patch: Partial<Clip>) => void;
 }) {
   const stage = useRef<HTMLDivElement>(null);
-  const [stageWidth, setStageWidth] = useState(640);
+  const stageWrap = useRef<HTMLDivElement>(null);
+  const [availableSize, setAvailableSize] = useState({
+    width: 640,
+    height: 360,
+  });
   const [a, b] = project.aspectRatio.split(":").map(Number);
+  const stageWidth = Math.min(
+    availableSize.width,
+    (availableSize.height * a) / b,
+  );
   useEffect(() => {
-    if (!stage.current) return;
-    const ro = new ResizeObserver((entries) =>
-      setStageWidth(entries[0].contentRect.width),
-    );
-    ro.observe(stage.current);
+    if (!stageWrap.current) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setAvailableSize({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
+    });
+    ro.observe(stageWrap.current);
     return () => ro.disconnect();
   }, []);
   const drag = (e: React.PointerEvent, original: Clip) => {
@@ -234,15 +248,16 @@ function Preview({
     window.addEventListener("pointerup", end);
   };
   return (
-    <div className="stage-wrap">
+    <div className="stage-wrap" ref={stageWrap}>
       <div
         className="preview-stage"
         ref={stage}
         style={{
           aspectRatio: `${a}/${b}`,
           background: project.background,
-          maxWidth: a / b < 1 ? "32vh" : "100%",
-          width: "100%",
+          width: stageWidth,
+          height: (stageWidth * b) / a,
+          flexShrink: 0,
         }}
       >
         {project.clips
@@ -326,13 +341,17 @@ export default function App() {
     markers: [],
   }));
   const [ready, setReady] = useState(false);
-  const [saved, setSaved] = useState(true);
+  const [initializing, setInitializing] = useState(true);
+  const [switchingProject, setSwitchingProject] = useState(false);
+  const projectSwitching = useRef(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
     () => createDemoProject().clips.find((c) => c.track === 0)?.id || null,
   );
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("Media");
-  const [libraryOpen, setLibraryOpen] = useState(() => window.innerWidth > 640);
+  const [libraryOpen, setLibraryOpen] = useState(() => window.innerWidth > 780);
   const [currentTime, setCurrentTime] = useState(1.8);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -353,12 +372,17 @@ export default function App() {
   );
   const [frameExporting, setFrameExporting] = useState(false);
   const [loop, setLoop] = useState(false);
+  const [importProgress, setImportProgress] =
+    useState<MediaImportProgress | null>(null);
+  const importInProgress = useRef(false);
   const [formats] = useState(getExportFormats);
   const exportAbort = useRef<AbortController | null>(null);
   const lastEdit = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const projectRef = useRef(project);
+  const savedProject = useRef<Project | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const projectInput = useRef<HTMLInputElement>(null);
   const duration = projectDuration(project.clips);
   const selected = project.clips.find((c) => c.id === selectedId) || null;
@@ -366,31 +390,121 @@ export default function App() {
     loadCurrentProject()
       .then((p) => {
         if (p && Array.isArray(p.clips) && Array.isArray(p.assets)) {
+          projectRef.current = p;
           setProject(p);
           setSelectedId(p.clips.find((c) => c.track === 0)?.id || null);
           setCurrentTime(0);
         }
+        setReady(true);
       })
-      .catch(() => {})
-      .finally(() => setReady(true));
+      .catch(() => {
+        setSaveError(
+          "Local storage is unavailable. Download a project backup to keep your edits.",
+        );
+      })
+      .finally(() => setInitializing(false));
+  }, []);
+  const persistProject = useCallback(async (snapshot: Project) => {
+    try {
+      await saveCurrentProject(snapshot);
+      savedProject.current = snapshot;
+      if (projectRef.current === snapshot) {
+        setSaved(true);
+        setSaveError(null);
+      }
+    } catch {
+      if (projectRef.current === snapshot) {
+        setSaved(false);
+        setSaveError(
+          "Could not save locally. Download a project backup to keep your edits.",
+        );
+      }
+    }
   }, []);
   useEffect(() => {
     projectRef.current = project;
     if (!ready) return;
     setSaved(false);
-    const t = setTimeout(() => {
-      saveCurrentProject(project)
-        .then(() => setSaved(true))
-        .catch(() =>
-          notify("Browser storage is full. Save a project file from the menu."),
-        );
-    }, 700);
+    setSaveError(null);
+    const t = setTimeout(() => void persistProject(project), 700);
     saveTimer.current = t;
     return () => {
       clearTimeout(t);
       saveTimer.current = null;
     };
-  }, [project, ready]);
+  }, [project, ready, persistProject]);
+  useEffect(() => {
+    if (!ready) return;
+    const flush = () => {
+      if (projectRef.current === savedProject.current) return;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      void persistProject(projectRef.current);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        setPlaying(false);
+        flush();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [ready, persistProject]);
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 780px)");
+    const update = () => {
+      setLibraryOpen(!narrow.matches);
+      setInspectorOpen(false);
+    };
+    narrow.addEventListener("change", update);
+    return () => narrow.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!modal || !dialogRef.current) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    const focusable = () =>
+      [
+        ...dialog.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]',
+        ),
+      ].filter((element) => element.getClientRects().length > 0);
+    (focusable()[0] || dialog).focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      if (
+        event.shiftKey &&
+        (document.activeElement === first ||
+          !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last ||
+          !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener("keydown", trap);
+    return () => {
+      dialog.removeEventListener("keydown", trap);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [modal]);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 3600);
@@ -467,6 +581,7 @@ export default function App() {
     const prev = undoStack[undoStack.length - 1];
     setRedoStack((s) => [...s, project]);
     setUndoStack((s) => s.slice(0, -1));
+    projectRef.current = prev;
     setProject(prev);
   }, [undoStack, project]);
   const redo = useCallback(() => {
@@ -474,6 +589,7 @@ export default function App() {
     const next = redoStack[redoStack.length - 1];
     setUndoStack((s) => [...s, project]);
     setRedoStack((s) => s.slice(0, -1));
+    projectRef.current = next;
     setProject(next);
   }, [redoStack, project]);
   const deleteClip = useCallback(() => {
@@ -563,19 +679,26 @@ export default function App() {
   }, [duration, currentTime]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (initializing || switchingProject) return;
       const target = e.target as HTMLElement;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        exportAbort.current?.abort();
+        setModal(null);
+        setMenuOpen(false);
+        setInspectorOpen(false);
+        if (window.innerWidth <= 780) setLibraryOpen(false);
+        if (!modal) setSelectedId(null);
+        return;
+      }
       if (
         ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
         target.isContentEditable
       )
         return;
-      if (e.key === "Escape") {
-        exportAbort.current?.abort();
-        setModal(null);
-        setMenuOpen(false);
-        setSelectedId(null);
-      }
       if (modal) return;
+      if (target.closest("button") && (e.code === "Space" || e.key === "Enter"))
+        return;
       if (e.key.toLowerCase() === "m" && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         addMarker();
@@ -631,6 +754,8 @@ export default function App() {
     notify,
     modal,
     currentTime,
+    initializing,
+    switchingProject,
   ]);
   const addAsset = useCallback(
     (asset: Asset, overlay = false) => {
@@ -667,6 +792,7 @@ export default function App() {
       }));
       setSelectedId(clip.id);
       setCurrentTime(start);
+      if (window.innerWidth <= 780) setLibraryOpen(false);
       notify("Added to timeline");
     },
     [commit, currentTime, notify],
@@ -687,6 +813,10 @@ export default function App() {
       commit((p) => ({ ...p, clips: [...p.clips, c] }));
       setSelectedId(c.id);
       setActiveTab("Text");
+      if (window.innerWidth <= 780) {
+        setLibraryOpen(false);
+        setInspectorOpen(true);
+      }
       notify("Text added. Drag it in the preview to reposition.");
     },
     [commit, currentTime, duration, notify],
@@ -706,77 +836,53 @@ export default function App() {
     };
     commit((p) => ({ ...p, clips: [...p.clips, c] }));
     setSelectedId(c.id);
+    if (window.innerWidth <= 780) setLibraryOpen(false);
   };
   const importFiles = async (files: FileList | File[]) => {
-    const imported: Asset[] = [];
-    for (const f of Array.from(files)) {
-      const type = f.type.startsWith("video/")
-        ? "video"
-        : f.type.startsWith("audio/")
-          ? "audio"
-          : f.type.startsWith("image/")
-            ? "image"
-            : null;
-      if (!type) {
-        notify(`Unsupported file: ${f.name}`);
-        continue;
-      }
-      try {
-        const src = await new Promise<string>((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result as string);
-          r.onerror = reject;
-          r.readAsDataURL(f);
-        });
-        let mediaDuration = 5,
-          thumbnail = type === "image" ? src : "";
-        if (type !== "image") {
-          const el = document.createElement(
-            type === "video" ? "video" : "audio",
-          );
-          el.preload = "metadata";
-          el.src = src;
-          await new Promise<void>((resolve, reject) => {
-            el.onloadedmetadata = () => {
-              mediaDuration = Number.isFinite(el.duration) ? el.duration : 10;
-              resolve();
-            };
-            el.onerror = () => reject(new Error("Cannot read media"));
-          });
-          if (type === "video") {
-            const video = el as HTMLVideoElement;
-            video.currentTime = Math.min(0.1, mediaDuration / 2);
-            await new Promise<void>((resolve) => {
-              video.onseeked = () => resolve();
-              setTimeout(resolve, 800);
-            });
-            const canvas = document.createElement("canvas");
-            canvas.width = 320;
-            canvas.height = 180;
-            canvas.getContext("2d")?.drawImage(video, 0, 0, 320, 180);
-            thumbnail = canvas.toDataURL("image/jpeg", 0.75);
-          }
-          el.removeAttribute("src");
-          el.load();
-        }
-        imported.push({
-          id: uid(),
-          name: f.name,
-          type,
-          src,
-          thumbnail,
-          duration: mediaDuration,
-        });
-      } catch {
-        notify(`Could not import ${f.name}. Try another format.`);
-      }
+    if (initializing || projectSwitching.current) {
+      notify("Wait for the project to finish opening before importing media.");
+      return;
     }
-    if (imported.length) {
-      commit((p) => ({ ...p, assets: [...p.assets, ...imported] }));
-      setActiveTab("Media");
-      notify(
-        `${imported.length} file${imported.length > 1 ? "s" : ""} imported. Click + to add to your timeline.`,
+    if (importInProgress.current) {
+      notify("An import is already running. Please wait for it to finish.");
+      return;
+    }
+    importInProgress.current = true;
+    const ownerId = projectRef.current.id;
+    try {
+      const { assets, failures } = await importMediaFiles(
+        files,
+        setImportProgress,
       );
+      if (projectRef.current.id !== ownerId) {
+        notify(
+          "The project changed during import. Please import the files again in this project.",
+        );
+        return;
+      }
+      if (assets.length) {
+        commit((p) => ({ ...p, assets: [...p.assets, ...assets] }));
+        setActiveTab(
+          assets.every((asset) => asset.type === "audio") ? "Audio" : "Media",
+        );
+      }
+      const imported = `${assets.length} file${assets.length === 1 ? "" : "s"} imported`;
+      if (failures.length) {
+        notify(
+          `${imported}; ${failures.length} skipped. ${failures[0].name}: ${failures[0].reason}`,
+        );
+      } else if (assets.length) {
+        notify(`${imported}. Select a file to add it to your timeline.`);
+      }
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "The import could not finish. Please try again.",
+      );
+    } finally {
+      importInProgress.current = false;
+      setImportProgress(null);
     }
   };
   const applyFilter = (name: string) => {
@@ -857,15 +963,25 @@ export default function App() {
     }
   };
   const openProject = async (next: Project) => {
+    if (initializing || projectSwitching.current) return false;
+    if (importInProgress.current) {
+      notify("Wait for the media import to finish before switching projects.");
+      return false;
+    }
     const normalized = {
       ...next,
       id: next.id || uid(),
       markers: next.markers || [],
     };
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    projectSwitching.current = true;
+    setSwitchingProject(true);
     try {
       await saveCurrentProject(normalized);
       projectRef.current = normalized;
+      savedProject.current = normalized;
+      setReady(true);
+      setSaveError(null);
       setProject(normalized);
       setUndoStack([]);
       setRedoStack([]);
@@ -879,6 +995,9 @@ export default function App() {
         "Could not save this project. Your current project is still open.",
       );
       return false;
+    } finally {
+      projectSwitching.current = false;
+      setSwitchingProject(false);
     }
   };
   const newProject = async () => {
@@ -1079,7 +1198,11 @@ export default function App() {
     else void document.exitFullscreen();
   };
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      aria-busy={initializing || switchingProject}
+      inert={initializing || switchingProject}
+    >
       <header className="topbar">
         <div
           className="brand"
@@ -1231,15 +1354,32 @@ export default function App() {
             }}
           />
           <span
-            className="project-saved"
-            title={saved ? "Saved in this browser" : "Saving…"}
+            className={`project-saved${saveError ? " error" : ""}`}
+            title={
+              saveError ||
+              (saved
+                ? "Saved in this browser"
+                : ready
+                  ? "Saving…"
+                  : "Loading project…")
+            }
           >
-            {saved ? (
+            {saveError ? (
+              <AlertCircle size={16} />
+            ) : saved ? (
               <Cloud size={16} />
             ) : (
               <LoaderCircle size={15} className="spin" />
             )}
-            <span>{saved ? "Saved" : "Saving"}</span>
+            <span>
+              {saveError
+                ? "Not saved"
+                : saved
+                  ? "Saved"
+                  : ready
+                    ? "Saving"
+                    : "Loading"}
+            </span>
           </span>
         </div>
         <div className="header-actions">
@@ -1281,7 +1421,7 @@ export default function App() {
         }}
       />
       <div
-        className={`workspace ${inspectorOpen ? "mobile-inspector-open" : ""}`}
+        className={`workspace${inspectorOpen ? " mobile-inspector-open" : ""}${libraryOpen ? " mobile-library-open" : ""}`}
       >
         <nav className="tool-rail" aria-label="Editor tools">
           {NAV.map(({ name, icon: Icon }) => (
@@ -1290,7 +1430,11 @@ export default function App() {
               className={`rail-item ${activeTab === name ? "active" : ""}`}
               onClick={() => {
                 setActiveTab(name);
-                setLibraryOpen(true);
+                setLibraryOpen(
+                  window.innerWidth <= 780 && activeTab === name
+                    ? !libraryOpen
+                    : true,
+                );
                 setInspectorOpen(false);
               }}
             >
@@ -1308,6 +1452,15 @@ export default function App() {
             </IconButton>
           </div>
         </nav>
+        {libraryOpen && (
+          <button
+            className="mobile-panel-close mobile-library-close"
+            aria-label="Close media panel"
+            onClick={() => setLibraryOpen(false)}
+          >
+            <X size={20} />
+          </button>
+        )}
         {libraryOpen && (
           <button
             className="mobile-library-backdrop"
@@ -1330,6 +1483,7 @@ export default function App() {
               assets={project.assets}
               onAddAsset={addAsset}
               onImport={importFiles}
+              importProgress={importProgress}
               onAddText={addText}
               onAddSticker={addSticker}
               onApplyFilter={applyFilter}
@@ -1351,7 +1505,10 @@ export default function App() {
                     ? "Collapse media library"
                     : "Expand media library"
                 }
-                onClick={() => setLibraryOpen(!libraryOpen)}
+                onClick={() => {
+                  setLibraryOpen(!libraryOpen);
+                  setInspectorOpen(false);
+                }}
               >
                 {libraryOpen ? (
                   <PanelLeftClose size={16} />
@@ -1496,6 +1653,15 @@ export default function App() {
         </main>
         {inspectorOpen && (
           <button
+            className="mobile-panel-close mobile-inspector-close"
+            aria-label="Close properties panel"
+            onClick={() => setInspectorOpen(false)}
+          >
+            <X size={20} />
+          </button>
+        )}
+        {inspectorOpen && (
+          <button
             className="mobile-inspector-backdrop"
             aria-label="Close clip properties"
             onClick={() => setInspectorOpen(false)}
@@ -1532,6 +1698,7 @@ export default function App() {
         />
       </div>
       <Timeline
+        onNotify={notify}
         assets={project.assets}
         markers={project.markers || []}
         onMarkersChange={(markers) => commit((p) => ({ ...p, markers }))}
@@ -1555,9 +1722,23 @@ export default function App() {
         canRedo={redoStack.length > 0}
       />
       <footer className="statusbar">
-        <span>
+        <span
+          className={saveError ? "save-error" : undefined}
+          role="status"
+          title={saveError || undefined}
+        >
           <span className="status-dot" />
-          {saved ? "All changes saved locally" : "Saving your changes…"}
+          {saveError ? (
+            <button onClick={saveFile} title={saveError}>
+              <AlertCircle size={13} /> Save failed · Download backup
+            </button>
+          ) : saved ? (
+            "All changes saved locally"
+          ) : ready ? (
+            "Saving your changes…"
+          ) : (
+            "Loading your project…"
+          )}
         </span>
         <span className="status-center">Create your next great story.</span>
         <button onClick={() => setModal("shortcuts")}>
@@ -1585,6 +1766,8 @@ export default function App() {
           }}
         >
           <section
+            ref={dialogRef}
+            tabIndex={-1}
             className={`modal ${modal === "shortcuts" ? "shortcuts-modal" : modal === "projects" ? "project-library-modal" : ""}`}
             role="dialog"
             aria-modal="true"

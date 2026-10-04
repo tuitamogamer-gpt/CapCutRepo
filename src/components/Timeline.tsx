@@ -25,9 +25,14 @@ import {
   ChevronRight,
   Play,
   Pause,
+  Layers2,
+  BookmarkPlus,
+  AudioLines,
+  X,
 } from "lucide-react";
-import type { Asset, Clip } from "../types";
+import type { Asset, Clip, TimelineMarker } from "../types";
 import { DEFAULT_CLIP, formatTime, uid } from "../types";
+import { sliceKeyframes } from "../animation";
 import "./Timeline.css";
 
 export interface TimelineProps {
@@ -48,10 +53,15 @@ export interface TimelineProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  markers?: TimelineMarker[];
+  onMarkersChange?: (markers: TimelineMarker[]) => void;
+  onAddOverlay?: () => void;
+  onExtractAudio?: () => void;
 }
 
 const ROWS = [
   { track: 1, name: "Text", icon: Type },
+  { track: 3, name: "Overlay", icon: Layers2 },
   { track: 0, name: "Video", icon: Film },
   { track: 2, name: "Audio", icon: Music2 },
 ];
@@ -150,6 +160,10 @@ export default function Timeline({
   onRedo,
   canUndo,
   canRedo,
+  markers = [],
+  onMarkersChange,
+  onAddOverlay,
+  onExtractAudio,
 }: TimelineProps) {
   const [zoom, setZoom] = useState(1);
   const [snapping, setSnapping] = useState(true);
@@ -157,6 +171,10 @@ export default function Timeline({
   const [locked, setLocked] = useState<number[]>([]);
   const [draft, setDraft] = useState<Clip[] | null>(null);
   const [dragTrack, setDragTrack] = useState<number | null>(null);
+  const [editingMarker, setEditingMarker] = useState<TimelineMarker | null>(
+    null,
+  );
+  const markerEditor = useRef<HTMLFormElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const dragCleanup = useRef<(() => void) | null>(null);
   const audioPeakCache = useRef(new Map<string, AudioPeaks | null>());
@@ -175,12 +193,32 @@ export default function Timeline({
     [clips],
   );
   const pixelsPerSecond = 55 * zoom;
-  const timelineSeconds = Math.max(30, Math.ceil((duration + 8) / 5) * 5);
+  const timelineSeconds = Math.max(
+    30,
+    Math.ceil(
+      (Math.max(duration, ...markers.map((marker) => marker.time)) + 8) / 5,
+    ) * 5,
+  );
   const canvasWidth = timelineSeconds * pixelsPerSecond;
   const displayedClips = draft || clips;
+  const hasOverlay = displayedClips.some((clip) => clip.track === 3);
+  const rows = ROWS.filter((row) => row.track !== 3 || hasOverlay);
+  const selectedClip = clips.find((clip) => clip.id === selectedId);
+  const selectedLocked = selectedClip
+    ? locked.includes(selectedClip.track)
+    : false;
   const majorStep = zoom < 0.65 ? 10 : zoom > 1.7 ? 2 : 5;
 
   useEffect(() => () => dragCleanup.current?.(), []);
+  useEffect(() => {
+    if (!editingMarker) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!markerEditor.current?.contains(event.target as Node))
+        setEditingMarker(null);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    return () => window.removeEventListener("pointerdown", dismiss);
+  }, [editingMarker?.id]);
   useEffect(() => {
     const sources = (JSON.parse(audioSourcesKey) as string[]).filter(
       (src) => !audioPeakCache.current.has(src),
@@ -354,6 +392,27 @@ export default function Timeline({
           ),
         };
       }
+      if (mode !== "move") {
+        const from = (patch.start ?? clip.start) - clip.start;
+        const to = from + (patch.duration ?? clip.duration);
+        let keyframes = sliceKeyframes(clip, from, to);
+        if (keyframes?.length) {
+          // Extending a trimmed edge holds its endpoint without shifting existing motion.
+          if (from < 0) {
+            keyframes = keyframes.map((frame) => ({
+              ...frame,
+              time: frame.time - from,
+            }));
+            keyframes.unshift({ ...keyframes[0], time: 0 });
+          }
+          if (to > clip.duration)
+            keyframes.push({
+              ...keyframes[keyframes.length - 1],
+              time: to - from,
+            });
+          patch = { ...patch, keyframes, animation: "none" };
+        }
+      }
       const groupDelta = (patch.start ?? clip.start) - clip.start;
       updated = clips.map((c) =>
         c.id === clip.id
@@ -404,8 +463,12 @@ export default function Timeline({
         thumbnail: asset.thumbnail,
         start: Math.round(start * 10) / 10,
         duration: asset.duration || 5,
-        track: asset.type === "audio" ? 2 : 0,
+        track: asset.type === "audio" ? 2 : track === 3 ? 3 : 0,
+        ...(asset.type !== "audio" && track === 3
+          ? { scale: 35, x: 28, y: 25 }
+          : {}),
       };
+      if (locked.includes(clip.track)) return;
       onChange([...clips, clip]);
       onSelect(clip.id);
     } catch {
@@ -423,8 +486,29 @@ export default function Timeline({
     );
   }
 
+  function addMarker() {
+    if (!onMarkersChange) return;
+    onMarkersChange([
+      ...markers,
+      {
+        id: uid(),
+        time: Math.max(0, currentTime),
+        label: `Marker ${markers.length + 1}`,
+        color: "#f3bf63",
+      },
+    ]);
+  }
+
+  function deleteMarker(id: string) {
+    onMarkersChange?.(markers.filter((marker) => marker.id !== id));
+    setEditingMarker(null);
+  }
+
   return (
-    <section className="timeline" aria-label="Video timeline">
+    <section
+      className={`timeline${hasOverlay ? " has-overlay" : ""}`}
+      aria-label="Video timeline"
+    >
       <div className="tl-toolbar">
         <div className="tl-toolbar-group">
           <ToolButton
@@ -445,21 +529,21 @@ export default function Timeline({
           <ToolButton
             label="Split at playhead (S)"
             onClick={onSplit}
-            disabled={!selectedId}
+            disabled={!selectedId || selectedLocked}
           >
             <Scissors size={17} />
           </ToolButton>
           <ToolButton
             label="Duplicate clip (Ctrl+D)"
             onClick={onDuplicate}
-            disabled={!selectedId}
+            disabled={!selectedId || selectedLocked}
           >
             <Copy size={16} />
           </ToolButton>
           <ToolButton
             label="Delete selected clip (Delete)"
             onClick={onDelete}
-            disabled={!selectedId}
+            disabled={!selectedId || selectedLocked}
           >
             <Trash2 size={17} />
           </ToolButton>
@@ -478,6 +562,31 @@ export default function Timeline({
           >
             <Link2 size={17} />
           </ToolButton>
+          {onAddOverlay && (
+            <ToolButton
+              label="Add selected clip as overlay"
+              onClick={onAddOverlay}
+              disabled={
+                !selectedClip || !["video", "image"].includes(selectedClip.type)
+              }
+            >
+              <Layers2 size={17} />
+            </ToolButton>
+          )}
+          {onExtractAudio && (
+            <ToolButton
+              label="Extract audio from selected video"
+              onClick={onExtractAudio}
+              disabled={selectedClip?.type !== "video" || selectedLocked}
+            >
+              <AudioLines size={17} />
+            </ToolButton>
+          )}
+          {onMarkersChange && (
+            <ToolButton label="Add marker at playhead (M)" onClick={addMarker}>
+              <BookmarkPlus size={17} />
+            </ToolButton>
+          )}
         </div>
         <div className="tl-toolbar-end">
           <span className="tl-timing">
@@ -545,7 +654,7 @@ export default function Timeline({
             <span>Tracks</span>
             <ChevronRight size={11} />
           </div>
-          {ROWS.map(({ track, name, icon: Icon }) => (
+          {rows.map(({ track, name, icon: Icon }) => (
             <div className={`tl-track-header tl-row-${track}`} key={track}>
               <div className="tl-track-name">
                 <Icon size={15} />
@@ -617,8 +726,157 @@ export default function Timeline({
                   </div>
                 ),
               )}
+              {markers.map((marker) => (
+                <button
+                  key={marker.id}
+                  className="tl-marker"
+                  style={
+                    {
+                      left: marker.time * pixelsPerSecond,
+                      "--marker-color": marker.color,
+                    } as CSSProperties
+                  }
+                  aria-label={`Marker: ${marker.label} at ${formatTime(marker.time)}`}
+                  aria-haspopup={onMarkersChange ? "dialog" : undefined}
+                  title={`${marker.label} · ${formatTime(marker.time)}${onMarkersChange ? " · Double-click to edit" : ""}`}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => onSeek(Math.min(duration, marker.time))}
+                  onDoubleClick={() =>
+                    onMarkersChange && setEditingMarker({ ...marker })
+                  }
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    if (onMarkersChange) setEditingMarker({ ...marker });
+                  }}
+                  onKeyDown={(event) => {
+                    if (!onMarkersChange) return;
+                    if (event.key === "Delete" || event.key === "Backspace") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      deleteMarker(marker.id);
+                    } else if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setEditingMarker({ ...marker });
+                    }
+                  }}
+                >
+                  <span />
+                </button>
+              ))}
+              {editingMarker && onMarkersChange && (
+                <form
+                  ref={markerEditor}
+                  className="tl-marker-editor"
+                  role="dialog"
+                  aria-label="Edit timeline marker"
+                  style={{
+                    left: Math.max(
+                      scroller.current?.scrollLeft ?? 0,
+                      Math.min(
+                        editingMarker.time * pixelsPerSecond - 12,
+                        (scroller.current?.scrollLeft ?? 0) +
+                          (scroller.current?.clientWidth ?? 400) -
+                          244,
+                      ),
+                    ),
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === "Escape") setEditingMarker(null);
+                  }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    onMarkersChange(
+                      markers.map((marker) =>
+                        marker.id === editingMarker.id
+                          ? {
+                              ...editingMarker,
+                              label: editingMarker.label.trim() || "Marker",
+                              time: Math.max(0, editingMarker.time),
+                            }
+                          : marker,
+                      ),
+                    );
+                    setEditingMarker(null);
+                  }}
+                >
+                  <div className="tl-marker-editor-title">
+                    <strong>Edit marker</strong>
+                    <button
+                      type="button"
+                      aria-label="Close marker editor"
+                      onClick={() => setEditingMarker(null)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <label>
+                    Label
+                    <input
+                      autoFocus
+                      maxLength={80}
+                      value={editingMarker.label}
+                      onChange={(event) =>
+                        setEditingMarker({
+                          ...editingMarker,
+                          label: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Time (seconds)
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={editingMarker.time}
+                      onChange={(event) =>
+                        setEditingMarker({
+                          ...editingMarker,
+                          time: Math.max(0, Number(event.target.value)),
+                        })
+                      }
+                    />
+                  </label>
+                  <div className="tl-marker-colors" aria-label="Marker color">
+                    {[
+                      ["Gold", "#f3bf63"],
+                      ["Teal", "#29dbc8"],
+                      ["Blue", "#7aa5ff"],
+                      ["Pink", "#e881bc"],
+                      ["Purple", "#b193f8"],
+                    ].map(([name, color]) => (
+                      <button
+                        key={color}
+                        type="button"
+                        aria-label={`${name} marker`}
+                        aria-pressed={editingMarker.color === color}
+                        style={{ background: color }}
+                        onClick={() =>
+                          setEditingMarker({ ...editingMarker, color })
+                        }
+                      />
+                    ))}
+                  </div>
+                  <div className="tl-marker-editor-actions">
+                    <button
+                      type="button"
+                      className="tl-marker-delete"
+                      onClick={() => deleteMarker(editingMarker.id)}
+                    >
+                      <Trash2 size={13} /> Delete marker
+                    </button>
+                    <button type="submit" className="tl-marker-save">
+                      Save
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
-            {ROWS.map(({ track, name }) => (
+            {rows.map(({ track, name }) => (
               <div
                 key={track}
                 className={`tl-track tl-row-${track}${dragTrack === track ? " drag-over" : ""}${locked.includes(track) ? " locked" : ""}`}
@@ -640,7 +898,9 @@ export default function Timeline({
                       ? "Add text and stickers"
                       : track === 0
                         ? "Drag your videos here to start creating"
-                        : "Drag audio here"}
+                        : track === 3
+                          ? "Drag video or images here for picture-in-picture"
+                          : "Drag audio here"}
                   </span>
                 )}
                 {displayedClips
@@ -773,7 +1033,8 @@ export default function Timeline({
           {clips.length} clips <b>·</b> {rulerTime(duration)} total
         </span>
         <span>
-          Drag to arrange <b>·</b> S to split <b>·</b> Space to play
+          Drag to arrange <b>·</b> S to split <b>·</b> M for marker <b>·</b>{" "}
+          Space to play
         </span>
         <span>
           30 fps <b>·</b> {Math.round(zoom * 100)}%

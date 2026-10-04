@@ -1,13 +1,60 @@
 import fixWebmDuration from "fix-webm-duration";
+import { evaluateClip } from "./animation";
 import { filterStyle, projectDuration, type Clip, type Project } from "./types";
 
-type ExportOptions = {
+export type ExportFormat = {
+  id: "webm" | "mp4";
+  label: string;
+  mimeType: string;
+};
+
+export type ExportOptions = {
   width: number;
   height: number;
   fps: number;
+  format?: ExportFormat["id"];
   onProgress: (progress: number) => void;
   signal?: AbortSignal;
 };
+
+export type FrameExportOptions = {
+  width: number;
+  height: number;
+  signal?: AbortSignal;
+};
+
+/** Only offer containers and codecs the current browser can actually record. */
+export function getExportFormats(): ExportFormat[] {
+  if (typeof MediaRecorder === "undefined") return [];
+  const candidates: {
+    id: ExportFormat["id"];
+    label: string;
+    types: string[];
+  }[] = [
+    {
+      id: "webm",
+      label: "WebM",
+      types: [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+      ],
+    },
+    {
+      id: "mp4",
+      label: "MP4",
+      types: [
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4",
+      ],
+    },
+  ];
+  return candidates.flatMap(({ id, label, types }) => {
+    const mimeType = types.find((type) => MediaRecorder.isTypeSupported(type));
+    return mimeType ? [{ id, label, mimeType }] : [];
+  });
+}
 
 type PreparedClip = {
   clip: Clip;
@@ -130,6 +177,7 @@ function seek(
   time: number,
   signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError());
   const duration = element.duration;
   const target = Math.max(
     0,
@@ -168,6 +216,92 @@ function seek(
   });
 }
 
+function snapshotClips(clips: Clip[]): Clip[] {
+  return clips
+    .filter((clip) => clip.duration > 0)
+    .map((clip) => ({
+      ...clip,
+      crop: clip.crop ? { ...clip.crop } : undefined,
+      keyframes: clip.keyframes?.map((frame) => ({ ...frame })),
+    }));
+}
+
+function layerOrder(clip: Clip): number {
+  if (clip.type === "text" || clip.type === "sticker") return 2;
+  return clip.track === 3 ? 1 : 0;
+}
+
+async function prepareClips(
+  clips: Clip[],
+  prepared: PreparedClip[],
+  signal: AbortSignal,
+  options: {
+    time?: number;
+    audioContext?: AudioContext;
+    destination?: MediaStreamAudioDestinationNode;
+  } = {},
+) {
+  await Promise.all(
+    clips.map(async (clip) => {
+      const item: PreparedClip = { clip, playing: false };
+      prepared.push(item);
+      if (clip.type === "image") {
+        item.image = new Image();
+        item.image.crossOrigin = "anonymous";
+        await waitForImage(item.image, clip.src, signal);
+      } else if (clip.type === "video" || clip.type === "audio") {
+        const element = document.createElement(
+          clip.type === "video" ? "video" : "audio",
+        );
+        item.media = element;
+        element.crossOrigin = "anonymous";
+        element.preload = "auto";
+        element.src = clip.src;
+        element.playbackRate = clamp(clip.speed || 1, 0.1, 16);
+        if (element instanceof HTMLVideoElement) element.playsInline = true;
+        // Audio is routed solely to the recording, never to the speakers.
+        if (options.audioContext && options.destination && clip.volume > 0) {
+          const source = options.audioContext.createMediaElementSource(element);
+          const gain = options.audioContext.createGain();
+          gain.gain.value = 0;
+          source.connect(gain);
+          gain.connect(options.destination);
+          item.gain = gain;
+        } else element.muted = true;
+        await waitForMedia(element, signal);
+        const localTime =
+          options.time === undefined
+            ? 0
+            : Math.max(0, options.time - clip.start);
+        await seek(
+          element,
+          Math.max(0, clip.sourceOffset || 0) + localTime * (clip.speed || 1),
+          signal,
+        );
+      }
+    }),
+  );
+  await document.fonts.ready;
+  if (signal.aborted) throw abortError();
+  // Picture-in-picture stays above the base footage and below titles/captions.
+  prepared.sort(
+    (a, b) =>
+      layerOrder(a.clip) - layerOrder(b.clip) || a.clip.start - b.clip.start,
+  );
+}
+
+function releaseClips(prepared: PreparedClip[]) {
+  for (const item of prepared) {
+    item.gain?.disconnect();
+    if (item.media) {
+      item.media.pause();
+      item.media.removeAttribute("src");
+      item.media.load();
+    }
+    if (item.image) item.image.removeAttribute("src");
+  }
+}
+
 function drawClip(
   ctx: CanvasRenderingContext2D,
   prepared: PreparedClip,
@@ -175,7 +309,8 @@ function drawClip(
   width: number,
   height: number,
 ) {
-  const { clip, image, media } = prepared;
+  const { image, media } = prepared;
+  const clip = evaluateClip(prepared.clip, time);
   if (
     clip.type === "audio" ||
     time < clip.start ||
@@ -191,29 +326,75 @@ function drawClip(
     height / 2 + (clip.y / 100) * height,
   );
   ctx.rotate((clip.rotation * Math.PI) / 180);
-  ctx.scale(clip.scale / 100, clip.scale / 100);
+  ctx.scale(
+    (clip.scale / 100) * (clip.flipX ? -1 : 1),
+    (clip.scale / 100) * (clip.flipY ? -1 : 1),
+  );
 
   if (clip.type === "text" || clip.type === "sticker") {
     const size = (clip.fontSize * width) / 960;
     ctx.font = `${clip.bold ? "700" : "400"} ${size}px "${clip.fontFamily || "Inter"}", Arial, sans-serif`;
-    ctx.textAlign = "center";
+    ctx.letterSpacing = `${size * -0.038}px`;
+    ctx.textAlign = clip.textAlign || "center";
     ctx.textBaseline = "middle";
+    const lines = (clip.text || clip.name).split("\n");
+    const lineHeight = size * (clip.lineSpacing || 1.09);
+    const textWidth = Math.max(
+      ...lines.map((line) => ctx.measureText(line).width),
+    );
+    if (clip.textBackground && clip.textBackground !== "transparent") {
+      const paddingX = (13 * width) / 960;
+      const paddingY = (8 * width) / 960;
+      ctx.fillStyle = clip.textBackground;
+      ctx.fillRect(
+        -textWidth / 2 - paddingX,
+        -(lines.length * lineHeight) / 2 - paddingY,
+        textWidth + 2 * paddingX,
+        lines.length * lineHeight + 2 * paddingY,
+      );
+    }
     ctx.fillStyle = clip.color || "#ffffff";
     ctx.shadowColor = "rgba(0,0,0,0.3)";
     ctx.shadowBlur = (8 * width) / 960;
     ctx.shadowOffsetY = (2 * width) / 960;
-    const lines = (clip.text || clip.name).split("\n");
-    const lineHeight = size * 1.09;
-    lines.forEach((line, index) =>
-      ctx.fillText(line, 0, (index - (lines.length - 1) / 2) * lineHeight),
-    );
+    const textX =
+      clip.textAlign === "left"
+        ? -textWidth / 2
+        : clip.textAlign === "right"
+          ? textWidth / 2
+          : 0;
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = ((clip.textStroke || 0) * width) / 960;
+    ctx.lineJoin = "round";
+    lines.forEach((line, index) => {
+      const textY = (index - (lines.length - 1) / 2) * lineHeight;
+      if (clip.textStroke && clip.textStroke > 0)
+        ctx.strokeText(line, textX, textY);
+      ctx.fillText(line, textX, textY);
+    });
   } else {
     const video = media instanceof HTMLVideoElement ? media : undefined;
     const drawable = image || video;
     const sourceWidth = image?.naturalWidth || video?.videoWidth || 0;
     const sourceHeight = image?.naturalHeight || video?.videoHeight || 0;
     if (drawable && sourceWidth && sourceHeight) {
-      const scale = Math.max(width / sourceWidth, height / sourceHeight);
+      const crop = clip.crop;
+      const left = (clamp(crop?.left || 0, 0, 100) * width) / 100;
+      const right = (clamp(crop?.right || 0, 0, 100) * width) / 100;
+      const top = (clamp(crop?.top || 0, 0, 100) * height) / 100;
+      const bottom = (clamp(crop?.bottom || 0, 0, 100) * height) / 100;
+      ctx.beginPath();
+      ctx.rect(
+        -width / 2 + left,
+        -height / 2 + top,
+        Math.max(0, width - left - right),
+        Math.max(0, height - top - bottom),
+      );
+      ctx.clip();
+      const scale = (clip.fit === "contain" ? Math.min : Math.max)(
+        width / sourceWidth,
+        height / sourceHeight,
+      );
       const drawWidth = sourceWidth * scale;
       const drawHeight = sourceHeight * scale;
       ctx.drawImage(
@@ -228,7 +409,92 @@ function drawClip(
   ctx.restore();
 }
 
-/** Records the actual timeline in real time. The output is a playable WebM video. */
+function renderComposition(
+  ctx: CanvasRenderingContext2D,
+  prepared: PreparedClip[],
+  background: string,
+  time: number,
+  width: number,
+  height: number,
+) {
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, width, height);
+  prepared.forEach((item) => drawClip(ctx, item, time, width, height));
+}
+
+/** Export the rendered playhead as a full-resolution PNG, including titles and overlays. */
+export async function exportFrame(
+  project: Project,
+  time: number,
+  options: FrameExportOptions,
+): Promise<Blob> {
+  const { signal } = options;
+  if (
+    !Number.isFinite(options.width) ||
+    !Number.isFinite(options.height) ||
+    options.width < 1 ||
+    options.height < 1 ||
+    !Number.isFinite(time)
+  ) {
+    throw new Error("Choose a valid frame resolution and timeline position.");
+  }
+  if (signal?.aborted) throw abortError();
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(options.width);
+  canvas.height = Math.round(options.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not create the frame renderer.");
+  const prepared: PreparedClip[] = [];
+  const loadController = new AbortController();
+  const abortLoading = () => loadController.abort();
+  signal?.addEventListener("abort", abortLoading, { once: true });
+  const clips = snapshotClips(project.clips).filter(
+    (clip) =>
+      clip.type !== "audio" &&
+      time >= clip.start &&
+      time < clip.start + clip.duration,
+  );
+  const background = project.background || "#000000";
+  try {
+    await prepareClips(clips, prepared, loadController.signal, { time });
+    renderComposition(
+      ctx,
+      prepared,
+      background,
+      time,
+      canvas.width,
+      canvas.height,
+    );
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (result) =>
+          result
+            ? resolve(result)
+            : reject(new Error("Could not encode the PNG frame.")),
+        "image/png",
+      ),
+    );
+    if (signal?.aborted) throw abortError();
+    return blob;
+  } catch (error) {
+    if (signal?.aborted) throw abortError();
+    if (error instanceof DOMException && error.name === "SecurityError") {
+      throw new Error(
+        "One of the media files does not allow frame export. Download it and import it from your computer.",
+      );
+    }
+    throw error;
+  } finally {
+    loadController.abort();
+    signal?.removeEventListener("abort", abortLoading);
+    releaseClips(prepared);
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
+/** Records the actual timeline in real time using a natively supported container. */
 export async function exportVideo(
   project: Project,
   options: ExportOptions,
@@ -256,15 +522,15 @@ export async function exportVideo(
     throw new Error("Add a clip to your timeline before exporting.");
   if (signal?.aborted) throw abortError();
 
-  const mimeType = [
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ].find((type) => MediaRecorder.isTypeSupported(type));
-  if (!mimeType)
+  const format = getExportFormats().find(
+    (candidate) => candidate.id === (options.format || "webm"),
+  );
+  if (!format) {
     throw new Error(
-      "This browser cannot encode WebM video. Try Chrome, Edge, or Firefox.",
+      `This browser cannot encode ${(options.format || "webm").toUpperCase()} video. Choose one of the available export formats.`,
     );
+  }
+  const mimeType = format.mimeType;
 
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(width);
@@ -273,9 +539,7 @@ export async function exportVideo(
   if (!ctx) throw new Error("Could not create the video renderer.");
 
   // Snapshot the timeline so editing during an export cannot alter the recording.
-  const clips = project.clips
-    .filter((clip) => clip.duration > 0)
-    .map((clip) => ({ ...clip }));
+  const clips = snapshotClips(project.clips);
   const background = project.background || "#000000";
   const duration = projectDuration(clips);
   const prepared: PreparedClip[] = [];
@@ -307,54 +571,19 @@ export async function exportVideo(
         );
     }
 
-    await Promise.all(
-      clips.map(async (clip) => {
-        const item: PreparedClip = { clip, playing: false };
-        prepared.push(item);
-        if (clip.type === "image") {
-          item.image = new Image();
-          item.image.crossOrigin = "anonymous";
-          await waitForImage(item.image, clip.src, loadController.signal);
-        } else if (clip.type === "video" || clip.type === "audio") {
-          const element = document.createElement(
-            clip.type === "video" ? "video" : "audio",
-          );
-          item.media = element;
-          element.crossOrigin = "anonymous";
-          element.preload = "auto";
-          element.src = clip.src;
-          element.playbackRate = clamp(clip.speed || 1, 0.1, 16);
-          if (element instanceof HTMLVideoElement) element.playsInline = true;
-          // All audible media is routed solely to the recorded stream.
-          if (audioContext && destination && clip.volume > 0) {
-            const source = audioContext.createMediaElementSource(element);
-            const gain = audioContext.createGain();
-            gain.gain.value = 0;
-            source.connect(gain);
-            gain.connect(destination);
-            item.gain = gain;
-          } else element.muted = true;
-          await waitForMedia(element, loadController.signal);
-          await seek(
-            element,
-            Math.max(0, clip.sourceOffset || 0),
-            loadController.signal,
-          );
-        }
-      }),
-    );
-    await document.fonts.ready;
-    if (signal?.aborted) throw abortError();
-    prepared.sort(
-      (a, b) => a.clip.track - b.clip.track || a.clip.start - b.clip.start,
-    );
-
-    const render = (time: number) => {
-      ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = background;
-      ctx.fillRect(0, 0, width, height);
-      prepared.forEach((item) => drawClip(ctx, item, time, width, height));
-    };
+    await prepareClips(clips, prepared, loadController.signal, {
+      audioContext,
+      destination,
+    });
+    const render = (time: number) =>
+      renderComposition(
+        ctx,
+        prepared,
+        background,
+        time,
+        canvas.width,
+        canvas.height,
+      );
     render(0);
     // Reading a pixel catches cross-origin canvas failures before recording begins.
     ctx.getImageData(0, 0, 1, 1);
@@ -487,9 +716,12 @@ export async function exportVideo(
     if (signal?.aborted) throw abortError();
     // MediaRecorder omits WebM duration, which otherwise leaves players showing
     // Infinity and prevents reliable seeking until the whole file is scanned.
-    const finalizedBlob = await fixWebmDuration(recordedBlob, duration * 1000, {
-      logger: false,
-    });
+    const finalizedBlob =
+      format.id === "webm"
+        ? await fixWebmDuration(recordedBlob, duration * 1000, {
+            logger: false,
+          })
+        : recordedBlob;
     if (signal?.aborted) throw abortError();
     onProgress(1);
     return finalizedBlob;
@@ -506,15 +738,7 @@ export async function exportVideo(
     signal?.removeEventListener("abort", abortLoading);
     clearInterval(tickTimer);
     if (recorder && recorder.state !== "inactive") recorder.stop();
-    for (const item of prepared) {
-      item.gain?.disconnect();
-      if (item.media) {
-        item.media.pause();
-        item.media.removeAttribute("src");
-        item.media.load();
-      }
-      if (item.image) item.image.removeAttribute("src");
-    }
+    releaseClips(prepared);
     stream?.getTracks().forEach((track) => track.stop());
     destination?.stream.getTracks().forEach((track) => track.stop());
     if (audioContext && audioContext.state !== "closed")

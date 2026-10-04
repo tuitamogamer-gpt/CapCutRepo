@@ -37,6 +37,10 @@ import {
   Monitor,
   Diamond,
   Plus,
+  Mic,
+  Camera,
+  Layers,
+  Scissors,
 } from "lucide-react";
 import type { Clip, Asset, Project } from "./types";
 import {
@@ -50,7 +54,21 @@ import { createDemoProject } from "./demo";
 import MediaLibrary from "./components/MediaLibrary";
 import Timeline from "./components/Timeline";
 import Inspector from "./components/Inspector";
-import { exportVideo, downloadBlob } from "./exportVideo";
+import {
+  exportVideo,
+  downloadBlob,
+  exportFrame,
+  getExportFormats,
+} from "./exportVideo";
+import { evaluateClip, clipTransformAt, sliceKeyframes } from "./animation";
+import {
+  loadCurrentProject,
+  saveCurrentProject,
+  saveProjectCopy,
+} from "./projectStorage";
+import ProjectLibrary from "./components/ProjectLibrary";
+import CaptionsPanel from "./components/CaptionsPanel";
+import RecorderPanel from "./components/RecorderPanel";
 
 const NAV = [
   { name: "Media", icon: Film },
@@ -62,46 +80,6 @@ const NAV = [
   { name: "Filters", icon: SlidersHorizontal },
   { name: "Captions", icon: Captions },
 ];
-function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open("capcut-studio", 1);
-    req.onupgradeneeded = () => req.result.createObjectStore("projects");
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-async function storeProject(project: Project) {
-  const db = await openDB();
-  return new Promise<void>((resolve, reject) => {
-    const tx = db.transaction("projects", "readwrite");
-    tx.objectStore("projects").put(project, "current");
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
-}
-async function loadProject(): Promise<Project | null> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const req = db
-      .transaction("projects")
-      .objectStore("projects")
-      .get("current");
-    req.onsuccess = () => {
-      db.close();
-      resolve(req.result || null);
-    };
-    req.onerror = () => {
-      db.close();
-      reject(req.error);
-    };
-  });
-}
 function IconButton({
   children,
   title,
@@ -128,6 +106,16 @@ function IconButton({
   );
 }
 
+function clipFade(clip: Clip, time: number) {
+  const local = time - clip.start;
+  const fadeIn =
+    clip.fadeIn > 0 ? Math.max(0, Math.min(1, local / clip.fadeIn)) : 1;
+  const fadeOut =
+    clip.fadeOut > 0
+      ? Math.max(0, Math.min(1, (clip.duration - local) / clip.fadeOut))
+      : 1;
+  return fadeIn * fadeOut;
+}
 function MediaElement({
   clip,
   time,
@@ -146,16 +134,7 @@ function MediaElement({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const envelope = Math.max(
-      0,
-      Math.min(
-        1,
-        clip.fadeIn > 0 ? (time - clip.start) / clip.fadeIn : 1,
-        clip.fadeOut > 0
-          ? (clip.start + clip.duration - time) / clip.fadeOut
-          : 1,
-      ),
-    );
+    const envelope = clipFade(clip, time);
     el.volume = muted
       ? 0
       : Math.min(1, Math.max(0, clip.volume / 100)) * envelope;
@@ -172,16 +151,18 @@ function MediaElement({
   }, [time, playing, active, clip, muted]);
   if (clip.type === "audio")
     return <audio ref={ref} src={clip.src} preload="auto" />;
-  const fade = Math.min(
-    1,
-    clip.fadeIn > 0 ? (time - clip.start) / clip.fadeIn : 1,
-    clip.fadeOut > 0 ? (clip.start + clip.duration - time) / clip.fadeOut : 1,
-  );
+  const fade = clipFade(clip, time);
+  const evaluated = evaluateClip(clip, time);
+  const crop = clip.crop;
   const style: CSSProperties = {
     display: active ? "block" : "none",
     filter: filterStyle(clip),
-    opacity: (clip.opacity / 100) * Math.max(0, fade),
-    transform: `translate(${clip.x}%, ${clip.y}%) rotate(${clip.rotation}deg) scale(${clip.scale / 100})`,
+    opacity: (evaluated.opacity / 100) * Math.max(0, fade),
+    objectFit: clip.fit || "cover",
+    clipPath: crop
+      ? `inset(${crop.top}% ${crop.right}% ${crop.bottom}% ${crop.left}%)`
+      : undefined,
+    transform: `translate(${evaluated.x}%, ${evaluated.y}%) rotate(${evaluated.rotation}deg) scale(${(evaluated.scale / 100) * (clip.flipX ? -1 : 1)}, ${(evaluated.scale / 100) * (clip.flipY ? -1 : 1)})`,
   };
   return clip.type === "video" ? (
     <video
@@ -232,7 +213,8 @@ function Preview({
     ro.observe(stage.current);
     return () => ro.disconnect();
   }, []);
-  const drag = (e: React.PointerEvent, clip: Clip) => {
+  const drag = (e: React.PointerEvent, original: Clip) => {
+    const clip = evaluateClip(original, currentTime);
     e.stopPropagation();
     onSelect(clip.id);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -268,7 +250,7 @@ function Preview({
             (c) =>
               c.type === "image" || c.type === "video" || c.type === "audio",
           )
-          .sort((x, y) => x.track - y.track)
+          .sort((x, y) => x.track - y.track || x.start - y.start)
           .map((c) => (
             <MediaElement
               key={c.id}
@@ -286,14 +268,10 @@ function Preview({
               currentTime >= c.start &&
               currentTime < c.start + c.duration,
           )
-          .map((c) => {
-            const fade = Math.min(
-              1,
-              c.fadeIn > 0 ? (currentTime - c.start) / c.fadeIn : 1,
-              c.fadeOut > 0
-                ? (c.start + c.duration - currentTime) / c.fadeOut
-                : 1,
-            );
+          .sort((x, y) => x.start - y.start)
+          .map((original) => {
+            const c = evaluateClip(original, currentTime);
+            const fade = clipFade(c, currentTime);
             return (
               <div
                 key={c.id}
@@ -303,7 +281,7 @@ function Preview({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") onSelect(c.id);
                 }}
-                onPointerDown={(e) => drag(e, c)}
+                onPointerDown={(e) => drag(e, original)}
                 className={`preview-text ${selectedId === c.id ? "selected" : ""}`}
                 style={{
                   left: `${50 + c.x}%`,
@@ -313,8 +291,16 @@ function Preview({
                   fontFamily: c.fontFamily,
                   fontSize: `${(c.fontSize * stageWidth) / 960}px`,
                   fontWeight: c.bold ? 700 : 400,
+                  textAlign: c.textAlign || "center",
+                  background: c.textBackground || "transparent",
+                  lineHeight: c.lineSpacing || 1.09,
+                  padding: `${(8 * stageWidth) / 960}px ${(13 * stageWidth) / 960}px`,
+                  WebkitTextStroke: c.textStroke
+                    ? `${(c.textStroke * stageWidth) / 960}px #000`
+                    : undefined,
+                  paintOrder: "stroke fill",
                   opacity: (c.opacity / 100) * Math.max(0, fade),
-                  transform: `translate(-50%,-50%) rotate(${c.rotation}deg) scale(${c.scale / 100})`,
+                  transform: `translate(-50%,-50%) rotate(${c.rotation}deg) scale(${(c.scale / 100) * (c.flipX ? -1 : 1)}, ${(c.scale / 100) * (c.flipY ? -1 : 1)})`,
                 }}
               >
                 {c.text}
@@ -334,7 +320,11 @@ function Preview({
 }
 
 export default function App() {
-  const [project, setProject] = useState<Project>(createDemoProject);
+  const [project, setProject] = useState<Project>(() => ({
+    ...createDemoProject(),
+    id: uid(),
+    markers: [],
+  }));
   const [ready, setReady] = useState(false);
   const [saved, setSaved] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -348,7 +338,7 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [modal, setModal] = useState<
-    "export" | "shortcuts" | "projects" | null
+    "export" | "shortcuts" | "projects" | "record" | null
   >(null);
   const [toast, setToast] = useState("");
   const [undoStack, setUndoStack] = useState<Project[]>([]);
@@ -358,15 +348,22 @@ export default function App() {
   const [resolution, setResolution] = useState("1080");
   const [fps, setFps] = useState("30");
   const [exportDone, setExportDone] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"webm" | "mp4">(
+    () => getExportFormats()[0]?.id || "webm",
+  );
+  const [frameExporting, setFrameExporting] = useState(false);
+  const [loop, setLoop] = useState(false);
+  const [formats] = useState(getExportFormats);
   const exportAbort = useRef<AbortController | null>(null);
   const lastEdit = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const projectRef = useRef(project);
   const previewRef = useRef<HTMLDivElement>(null);
   const projectInput = useRef<HTMLInputElement>(null);
   const duration = projectDuration(project.clips);
   const selected = project.clips.find((c) => c.id === selectedId) || null;
   useEffect(() => {
-    loadProject()
+    loadCurrentProject()
       .then((p) => {
         if (p && Array.isArray(p.clips) && Array.isArray(p.assets)) {
           setProject(p);
@@ -382,13 +379,17 @@ export default function App() {
     if (!ready) return;
     setSaved(false);
     const t = setTimeout(() => {
-      storeProject(project)
+      saveCurrentProject(project)
         .then(() => setSaved(true))
         .catch(() =>
           notify("Browser storage is full. Save a project file from the menu."),
         );
     }, 700);
-    return () => clearTimeout(t);
+    saveTimer.current = t;
+    return () => {
+      clearTimeout(t);
+      saveTimer.current = null;
+    };
   }, [project, ready]);
   useEffect(() => {
     if (!toast) return;
@@ -418,8 +419,40 @@ export default function App() {
           clips: p.clips.map((c) => {
             if (c.id !== id) return c;
             const adjusted = { ...patch };
-            if (patch.speed !== undefined && patch.duration === undefined)
+            if (patch.speed !== undefined && patch.duration === undefined) {
               adjusted.duration = (c.duration * c.speed) / patch.speed;
+              if (c.keyframes?.length && patch.keyframes === undefined)
+                adjusted.keyframes = c.keyframes.map((k) => ({
+                  ...k,
+                  time: (k.time * c.speed) / patch.speed!,
+                }));
+            }
+            if (
+              (c.keyframes?.length ||
+                (c.animation && c.animation !== "none")) &&
+              patch.keyframes === undefined &&
+              ["x", "y", "scale", "rotation", "opacity"].some(
+                (key) => key in patch,
+              )
+            ) {
+              const sample = clipTransformAt(c, currentTime);
+              const keyframe = {
+                ...sample,
+                ...Object.fromEntries(
+                  Object.entries(patch).filter(([key]) =>
+                    ["x", "y", "scale", "rotation", "opacity"].includes(key),
+                  ),
+                ),
+              };
+              adjusted.keyframes = [
+                ...(c.keyframes?.length
+                  ? c.keyframes
+                  : sliceKeyframes(c, 0, c.duration) || []
+                ).filter((k) => Math.abs(k.time - sample.time) > 1 / 60),
+                keyframe,
+              ].sort((a, b) => a.time - b.time);
+              adjusted.animation = "none";
+            }
             if (patch.text !== undefined)
               adjusted.name = patch.text.slice(0, 32) || "Text";
             return { ...c, ...adjusted };
@@ -427,7 +460,7 @@ export default function App() {
         }),
         true,
       ),
-    [commit],
+    [commit, currentTime],
   );
   const undo = useCallback(() => {
     if (!undoStack.length) return;
@@ -475,9 +508,17 @@ export default function App() {
       notify("Move the playhead inside the selected clip");
       return;
     }
-    const first = { ...selected, duration: currentTime - selected.start };
-    const second = {
+    const local = currentTime - selected.start;
+    const first: Clip = {
       ...selected,
+      duration: local,
+      keyframes: sliceKeyframes(selected, 0, local),
+      animation: "none",
+    };
+    const second: Clip = {
+      ...selected,
+      keyframes: sliceKeyframes(selected, local, selected.duration),
+      animation: "none",
       id: uid(),
       start: currentTime,
       duration: selected.start + selected.duration - currentTime,
@@ -506,6 +547,7 @@ export default function App() {
       last = now;
       setCurrentTime((t) => {
         if (t + delta >= duration) {
+          if (loop) return 0;
           setPlaying(false);
           return duration;
         }
@@ -515,7 +557,7 @@ export default function App() {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing, duration]);
+  }, [playing, duration, loop]);
   useEffect(() => {
     if (currentTime > duration) setCurrentTime(duration);
   }, [duration, currentTime]);
@@ -532,6 +574,11 @@ export default function App() {
         setModal(null);
         setMenuOpen(false);
         setSelectedId(null);
+      }
+      if (modal) return;
+      if (e.key.toLowerCase() === "m" && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        addMarker();
       }
       if (e.code === "Space") {
         e.preventDefault();
@@ -573,11 +620,22 @@ export default function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [togglePlay, deleteClip, split, undo, redo, duplicate, duration, notify]);
+  }, [
+    togglePlay,
+    deleteClip,
+    split,
+    undo,
+    redo,
+    duplicate,
+    duration,
+    notify,
+    modal,
+    currentTime,
+  ]);
   const addAsset = useCallback(
-    (asset: Asset) => {
+    (asset: Asset, overlay = false) => {
       const p = projectRef.current;
-      const track = asset.type === "audio" ? 2 : 0;
+      const track = asset.type === "audio" ? 2 : overlay ? 3 : 0;
       const start =
         track === 0
           ? Math.max(
@@ -598,8 +656,15 @@ export default function App() {
         start,
         duration: asset.duration || 5,
         track,
+        ...(overlay ? { scale: 35, x: 28, y: 25 } : {}),
       };
-      commit((prev) => ({ ...prev, clips: [...prev.clips, clip] }));
+      commit((prev) => ({
+        ...prev,
+        assets: prev.assets.some((a) => a.id === asset.id)
+          ? prev.assets
+          : [...prev.assets, asset],
+        clips: [...prev.clips, clip],
+      }));
       setSelectedId(clip.id);
       setCurrentTime(start);
       notify("Added to timeline");
@@ -774,13 +839,204 @@ export default function App() {
         )
       )
         throw new Error();
-      commit(p);
+      await saveCurrentProject(projectRef.current);
+      if (
+        !(await openProject({
+          ...p,
+          id: uid(),
+          clips: p.clips.map((c) => ({ ...DEFAULT_CLIP, ...c })),
+        }))
+      )
+        return;
       setCurrentTime(0);
       setPlaying(false);
       setSelectedId(p.clips[0]?.id || null);
       notify("Project opened");
     } catch {
       notify("This is not a valid CapCut Studio project file.");
+    }
+  };
+  const openProject = async (next: Project) => {
+    const normalized = {
+      ...next,
+      id: next.id || uid(),
+      markers: next.markers || [],
+    };
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    try {
+      await saveCurrentProject(normalized);
+      projectRef.current = normalized;
+      setProject(normalized);
+      setUndoStack([]);
+      setRedoStack([]);
+      setSelectedId(normalized.clips[0]?.id || null);
+      setCurrentTime(0);
+      setPlaying(false);
+      setModal(null);
+      return true;
+    } catch {
+      notify(
+        "Could not save this project. Your current project is still open.",
+      );
+      return false;
+    }
+  };
+  const newProject = async () => {
+    try {
+      await saveCurrentProject(projectRef.current);
+      const opened = await openProject({
+        id: uid(),
+        name: "Untitled project",
+        clips: [],
+        assets: [],
+        aspectRatio: "16:9",
+        background: "#000000",
+        markers: [],
+      });
+      if (!opened) return;
+      notify("New project created. Your previous project is in My projects.");
+    } catch {
+      notify(
+        "Could not save the current project. Download a backup before creating a new one.",
+      );
+    }
+  };
+  const addMarker = () =>
+    commit((p) => ({
+      ...p,
+      markers: [
+        ...(p.markers || []),
+        {
+          id: uid(),
+          time: currentTime,
+          label: `Marker ${(p.markers?.length || 0) + 1}`,
+          color: "#f5b85c",
+        },
+      ],
+    }));
+  const addSelectedOverlay = () => {
+    if (!selected || !["video", "image"].includes(selected.type)) {
+      notify("Select a photo or video to add it as an overlay");
+      return;
+    }
+    const clip = {
+      ...selected,
+      id: uid(),
+      name: `${selected.name} overlay`,
+      track: 3,
+      scale: 35,
+      x: 28,
+      y: 25,
+      start: currentTime,
+      keyframes: [],
+      animation: "none" as const,
+    };
+    commit((p) => ({ ...p, clips: [...p.clips, clip] }));
+    setSelectedId(clip.id);
+    notify("Picture-in-picture overlay added");
+  };
+  const extractAudio = () => {
+    if (selected?.type !== "video") {
+      notify("Select a video to detach its audio");
+      return;
+    }
+    const audio: Clip = {
+      ...selected,
+      id: uid(),
+      name: `${selected.name} audio`,
+      type: "audio",
+      track: 2,
+      keyframes: [],
+      animation: "none",
+    };
+    commit((p) => ({
+      ...p,
+      clips: [
+        ...p.clips.map((c) => (c.id === selected.id ? { ...c, volume: 0 } : c)),
+        audio,
+      ],
+    }));
+    setSelectedId(audio.id);
+    notify("Audio detached. The original video is muted.");
+  };
+  const snapshot = async (insert: boolean) => {
+    setPlaying(false);
+    setMenuOpen(false);
+    setFrameExporting(true);
+    try {
+      const [a, b] = project.aspectRatio.split(":").map(Number);
+      const width = a >= b ? 1920 : 1080;
+      const height = Math.round((width * b) / a);
+      const blob = await exportFrame(project, currentTime, { width, height });
+      if (!insert) {
+        downloadBlob(blob, `${project.name}-${currentTime.toFixed(2)}s.png`);
+        notify("Frame downloaded as PNG");
+      } else {
+        const src = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        const asset: Asset = {
+          id: uid(),
+          name: `Freeze frame ${currentTime.toFixed(2)}s.png`,
+          type: "image",
+          src,
+          thumbnail: src,
+          duration: 3,
+        };
+        const clip: Clip = {
+          ...DEFAULT_CLIP,
+          id: uid(),
+          assetId: asset.id,
+          name: asset.name,
+          type: "image",
+          src,
+          thumbnail: src,
+          start: currentTime,
+          duration: 3,
+          track: 0,
+        };
+        commit((p) => ({
+          ...p,
+          assets: [...p.assets, asset],
+          markers: p.markers?.map((m) =>
+            m.time >= currentTime ? { ...m, time: m.time + 3 } : m,
+          ),
+          clips: [
+            ...p.clips.flatMap((c) => {
+              if (c.start >= currentTime) return [{ ...c, start: c.start + 3 }];
+              if (c.start + c.duration <= currentTime) return [c];
+              const cut = currentTime - c.start;
+              return [
+                {
+                  ...c,
+                  duration: cut,
+                  keyframes: sliceKeyframes(c, 0, cut),
+                  animation: "none" as const,
+                },
+                {
+                  ...c,
+                  id: uid(),
+                  start: currentTime + 3,
+                  duration: c.duration - cut,
+                  sourceOffset: c.sourceOffset + cut * c.speed,
+                  keyframes: sliceKeyframes(c, cut, c.duration),
+                  animation: "none" as const,
+                },
+              ];
+            }),
+            clip,
+          ],
+        }));
+        setSelectedId(clip.id);
+        notify("3-second freeze frame inserted at the playhead");
+      }
+    } catch (error) {
+      notify((error as Error).message || "Could not capture this frame");
+    } finally {
+      setFrameExporting(false);
     }
   };
   const startExport = async () => {
@@ -798,10 +1054,11 @@ export default function App() {
         width,
         height,
         fps: Number(fps),
+        format: exportFormat,
         onProgress: setProgress,
         signal: exportAbort.current.signal,
       });
-      downloadBlob(blob, `${project.name}.webm`);
+      downloadBlob(blob, `${project.name}.${exportFormat}`);
       setExportDone(true);
       notify("Your video is ready. Download started.");
     } catch (error) {
@@ -871,17 +1128,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setMenuOpen(false);
-                    saveFile();
-                    commit({
-                      name: "Untitled project",
-                      clips: [],
-                      assets: project.assets,
-                      aspectRatio: "16:9",
-                      background: "#000000",
-                    });
-                    setCurrentTime(0);
-                    setSelectedId(null);
-                    setPlaying(false);
+                    void newProject();
                   }}
                 >
                   <FilePlus2 size={16} />
@@ -899,6 +1146,63 @@ export default function App() {
                 <button onClick={saveFile}>
                   <Save size={16} />
                   Download project<span>⌘ S</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPlaying(false);
+                    setModal("record");
+                  }}
+                >
+                  <Mic size={16} />
+                  Record voice or screen
+                </button>
+                <button
+                  onClick={() => void snapshot(false)}
+                  disabled={frameExporting}
+                >
+                  <Camera size={16} />
+                  Export current frame
+                </button>
+                <button
+                  onClick={() => void snapshot(true)}
+                  disabled={frameExporting}
+                >
+                  <Film size={16} />
+                  Insert freeze frame
+                </button>
+                <button
+                  onClick={() => {
+                    void saveCurrentProject(projectRef.current)
+                      .then(() => saveProjectCopy(projectRef.current))
+                      .then((copy) => {
+                        openProject(copy);
+                        notify("Project duplicated");
+                      })
+                      .catch(() => notify("Could not duplicate project"));
+                    setMenuOpen(false);
+                  }}
+                >
+                  <Layers size={16} />
+                  Duplicate project
+                </button>
+                <button
+                  onClick={() => {
+                    void saveCurrentProject(projectRef.current)
+                      .then(() =>
+                        openProject({
+                          ...createDemoProject(),
+                          id: uid(),
+                          markers: [],
+                        }),
+                      )
+                      .catch(() => notify("Could not save current project"));
+                    setMenuOpen(false);
+                  }}
+                >
+                  {" "}
+                  <Film size={16} />
+                  Open Bali demo
                 </button>
                 <div className="dropdown-rule" />
                 <button
@@ -1011,18 +1315,33 @@ export default function App() {
             onClick={() => setLibraryOpen(false)}
           />
         )}
-        {libraryOpen && (
-          <MediaLibrary
-            assets={project.assets}
-            onAddAsset={addAsset}
-            onImport={importFiles}
-            onAddText={addText}
-            onAddSticker={addSticker}
-            onApplyFilter={applyFilter}
-            onApplyTransition={applyTransition}
-            activeTab={activeTab}
-          />
-        )}
+        {libraryOpen &&
+          (activeTab === "Captions" ? (
+            <CaptionsPanel
+              clips={project.clips}
+              currentTime={currentTime}
+              onChange={(clips) => commit((p) => ({ ...p, clips }))}
+              onSelect={setSelectedId}
+              onSeek={setCurrentTime}
+              onNotify={notify}
+            />
+          ) : (
+            <MediaLibrary
+              assets={project.assets}
+              onAddAsset={addAsset}
+              onImport={importFiles}
+              onAddText={addText}
+              onAddSticker={addSticker}
+              onApplyFilter={applyFilter}
+              onApplyTransition={applyTransition}
+              activeTab={activeTab}
+              onRecord={() => {
+                setPlaying(false);
+                setModal("record");
+              }}
+              onAddOverlay={(asset) => addAsset(asset, true)}
+            />
+          ))}
         <main className="preview-panel" ref={previewRef}>
           <div className="panel-heading">
             <div className="preview-heading">
@@ -1053,6 +1372,44 @@ export default function App() {
             >
               <SlidersHorizontal size={17} />
             </button>
+            <div className="player-tools">
+              <IconButton
+                title="Record voice or screen"
+                onClick={() => {
+                  setPlaying(false);
+                  setModal("record");
+                }}
+              >
+                <Mic size={15} />
+              </IconButton>
+              <IconButton
+                title="Export current frame as PNG"
+                disabled={frameExporting}
+                onClick={() => void snapshot(false)}
+              >
+                {frameExporting ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <Camera size={15} />
+                )}
+              </IconButton>
+              <IconButton
+                title={loop ? "Disable loop playback" : "Loop playback"}
+                className={loop ? "active" : ""}
+                onClick={() => setLoop(!loop)}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                >
+                  <path d="M17 2l4 4-4 4M3 11V8a2 2 0 012-2h16M7 22l-4-4 4-4m14-1v3a2 2 0 01-2 2H3" />
+                </svg>
+              </IconButton>
+            </div>
             <div className="quality-label">
               <span className="quality-dot" />
               Full quality
@@ -1146,18 +1503,40 @@ export default function App() {
         )}
         <Inspector
           clip={selected}
+          currentTime={currentTime}
+          onSeek={setCurrentTime}
+          background={project.background}
+          onBackground={(background) => commit((p) => ({ ...p, background }))}
           onChange={(patch) => selected && updateClip(selected.id, patch)}
           aspectRatio={project.aspectRatio}
           onAspectRatio={(ratio) =>
             commit((p) => ({ ...p, aspectRatio: ratio }))
           }
           onReset={() => {
-            if (selected) updateClip(selected.id, { ...DEFAULT_CLIP });
+            if (selected)
+              updateClip(selected.id, {
+                ...DEFAULT_CLIP,
+                sourceOffset: selected.sourceOffset,
+                keyframes: [],
+                animation: "none",
+                flipX: false,
+                flipY: false,
+                fit: "cover",
+                crop: { top: 0, right: 0, bottom: 0, left: 0 },
+                textBackground: undefined,
+                textStroke: 0,
+                textAlign: "center",
+                lineSpacing: 1.09,
+              });
           }}
         />
       </div>
       <Timeline
         assets={project.assets}
+        markers={project.markers || []}
+        onMarkersChange={(markers) => commit((p) => ({ ...p, markers }))}
+        onAddOverlay={addSelectedOverlay}
+        onExtractAudio={extractAudio}
         clips={project.clips}
         selectedId={selectedId}
         currentTime={currentTime}
@@ -1206,7 +1585,7 @@ export default function App() {
           }}
         >
           <section
-            className={`modal ${modal === "shortcuts" ? "shortcuts-modal" : ""}`}
+            className={`modal ${modal === "shortcuts" ? "shortcuts-modal" : modal === "projects" ? "project-library-modal" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
@@ -1281,7 +1660,20 @@ export default function App() {
                     </label>
                     <div className="form-row">
                       <span>Format</span>
-                      <span className="format-pill">WebM</span>
+                      <select
+                        aria-label="Export format"
+                        value={exportFormat}
+                        disabled={exporting}
+                        onChange={(e) =>
+                          setExportFormat(e.target.value as "webm" | "mp4")
+                        }
+                      >
+                        {formats.map((format) => (
+                          <option value={format.id} key={format.id}>
+                            {format.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <p className="export-note">
                       Rendered on your device, with audio. Keep this tab open
@@ -1339,6 +1731,7 @@ export default function App() {
                   {[
                     ["Play / pause", "Space"],
                     ["Split selected clip", "S"],
+                    ["Add timeline marker", "M"],
                     ["Delete selected clip", "Delete"],
                     ["Undo", "⌘ / Ctrl + Z"],
                     ["Redo", "⌘ / Ctrl + Shift + Z"],
@@ -1361,83 +1754,40 @@ export default function App() {
               </>
             )}
             {modal === "projects" && (
-              <>
-                <div className="modal-icon">
-                  <FolderOpen size={24} />
-                </div>
-                <h2 id="modal-title">Make room for your next idea.</h2>
-                <p className="modal-description">
-                  Your creative space, saved on this device.
-                </p>
-                <div className="project-card">
-                  <span className="project-card-icon">
-                    <Film size={23} />
-                  </span>
-                  <div>
-                    <strong>{project.name}</strong>
-                    <span>Current project · {formatTime(duration)}</span>
-                  </div>
-                  <button
-                    className="secondary-button"
-                    onClick={() => setModal(null)}
-                  >
-                    Continue
-                    <ArrowUpRight size={14} />
-                  </button>
-                </div>
-                <button
-                  className="primary-button full-width"
-                  onClick={() => {
-                    saveFile();
-                    commit({
-                      name: "Untitled project",
-                      clips: [],
-                      assets: [],
-                      aspectRatio: "16:9",
-                      background: "#000000",
-                    });
-                    setCurrentTime(0);
-                    setSelectedId(null);
-                    setPlaying(false);
-                    setModal(null);
-                    notify(
-                      "New project created. Previous project downloaded as a backup.",
-                    );
-                  }}
-                >
-                  <Plus size={18} />
-                  New project
-                </button>
-                <button
-                  className="secondary-button full-width"
-                  onClick={() => {
-                    projectInput.current?.click();
-                    setModal(null);
-                  }}
-                >
-                  <FolderOpen size={17} />
-                  Open a project file
-                </button>
-                <button
-                  className="text-button"
-                  onClick={() => {
-                    const p = createDemoProject();
-                    saveFile();
-                    commit(p);
-                    setSelectedId(
-                      p.clips.find((c) => c.track === 0)?.id || null,
-                    );
-                    setCurrentTime(1.8);
-                    setPlaying(false);
-                    setModal(null);
-                    notify(
-                      "Demo opened. Previous project downloaded as a backup.",
-                    );
-                  }}
-                >
-                  Explore the Bali demo <ArrowUpRight size={13} />
-                </button>
-              </>
+              <ProjectLibrary
+                currentProject={project}
+                onOpen={openProject}
+                onNew={newProject}
+                onImport={() => projectInput.current?.click()}
+                onClose={() => setModal(null)}
+                onNotify={notify}
+              />
+            )}
+            {modal === "record" && (
+              <RecorderPanel
+                onRecorded={(asset) => {
+                  const clip: Clip = {
+                    ...DEFAULT_CLIP,
+                    id: uid(),
+                    assetId: asset.id,
+                    name: asset.name,
+                    type: asset.type,
+                    src: asset.src,
+                    thumbnail: asset.thumbnail,
+                    start: currentTime,
+                    duration: asset.duration,
+                    track: asset.type === "audio" ? 2 : 0,
+                  };
+                  commit((p) => ({
+                    ...p,
+                    assets: [...p.assets, asset],
+                    clips: [...p.clips, clip],
+                  }));
+                  setSelectedId(clip.id);
+                }}
+                onClose={() => setModal(null)}
+                onNotify={notify}
+              />
             )}
           </section>
         </div>

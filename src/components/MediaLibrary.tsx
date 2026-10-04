@@ -17,6 +17,8 @@ import {
   Type,
   Upload,
   X,
+  Mic,
+  Layers,
 } from "lucide-react";
 import { DEMO_ASSETS } from "../demo";
 import {
@@ -37,6 +39,8 @@ interface MediaLibraryProps {
   onApplyFilter: (name: string) => void;
   onApplyTransition: (seconds: number) => void;
   activeTab: string;
+  onRecord?: () => void;
+  onAddOverlay?: (asset: Asset) => void;
 }
 
 const STICKERS = [
@@ -115,6 +119,8 @@ export default function MediaLibrary({
   onApplyFilter,
   onApplyTransition,
   activeTab,
+  onRecord,
+  onAddOverlay,
 }: MediaLibraryProps) {
   const [section, setSection] = useState("Your media");
   const [query, setQuery] = useState("");
@@ -258,6 +264,11 @@ export default function MediaLibrary({
             >
               <Plus size={17} strokeWidth={2.1} /> Import
             </button>
+            {onRecord && (
+              <button className="library-record" onClick={onRecord}>
+                <Mic size={13} /> Record voice or screen
+              </button>
+            )}
             <span className="library-import-hint">
               Add videos, photos, and audio
             </span>
@@ -335,9 +346,20 @@ export default function MediaLibrary({
                       )}
                     </span>
                   </button>
-                  <span className="media-card-name" title={asset.name}>
-                    {asset.name}
-                  </span>
+                  <div className="media-card-label">
+                    <span className="media-card-name" title={asset.name}>
+                      {asset.name}
+                    </span>
+                    {onAddOverlay && (
+                      <button
+                        title={`Add ${asset.name} as overlay`}
+                        aria-label={`Add ${asset.name} as overlay`}
+                        onClick={() => onAddOverlay(asset)}
+                      >
+                        <Layers size={12} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -381,6 +403,14 @@ export default function MediaLibrary({
           </div>
           <div className="library-content">
             {search("Search audio")}
+            {onRecord && (
+              <button
+                className="library-record audio-record"
+                onClick={onRecord}
+              >
+                <Mic size={14} /> Record a voiceover
+              </button>
+            )}
             <button
               className="library-secondary"
               onClick={() => input.current?.click()}

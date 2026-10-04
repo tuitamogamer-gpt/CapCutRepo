@@ -22,32 +22,42 @@ The build command checks TypeScript and creates a production bundle in `dist/`. 
 
 ## Working features
 
-- Import local images, video, and audio using the file picker or drag and drop. Imported videos receive generated thumbnails. Search and sort the media library, and click or drag assets onto the timeline.
-- Edit three timeline lanes for visual media, text/stickers, and audio. Move and trim clips, scrub the playhead, split, duplicate, delete, snap to nearby boundaries, zoom, and undo/redo edits.
-- Preview the timeline with audio, mute playback, jump between clips, and use fullscreen preview.
-- Add editable titles and manual captions. Change text, font, size, bold weight, color, and position; drag text or stickers directly on the canvas.
-- Add emoji stickers and preview the three included original audio tracks before using them.
-- Adjust position, scale, rotation, opacity, brightness, contrast, saturation, playback speed, and volume. Apply color presets and clip fades.
-- Switch between 16:9, 9:16, 1:1, 4:3, 4:5, and 21:9 canvases.
-- Rename projects, automatically save the current project locally, download/open project JSON files, and export a playable WebM video with audio.
+- Import local images, video, and audio with the file picker or drag and drop. Generate video thumbnails, search and sort the media library, and add assets by clicking or dragging them onto the timeline.
+- Edit visual media, text/stickers, audio, and picture-in-picture overlays on separate timeline lanes. Move and trim clips, scrub, split, duplicate, delete, snap to boundaries, fit or zoom the timeline, and undo/redo edits.
+- Add named, colored timeline markers; click a marker to seek and double-click it to edit. Preview with audio, mute playback, jump between clips, loop the project, or use fullscreen preview.
+- Change position, scale, rotation, opacity, brightness, contrast, saturation, playback speed, and volume. Flip horizontally or vertically, crop each edge, choose fill or fit, and apply color presets and clip/audio fades.
+- Animate position, scale, rotation, and opacity with editable keyframes and linear interpolation. Add, update, remove, or seek to keyframes in **Inspector → Animation**, or choose zoom, pan, and rise presets. Trim and split operations preserve the sampled motion.
+- Add editable titles, manual captions, and emoji stickers. Set font, size, weight, color, alignment, background, outline, and line spacing; drag text or stickers on the canvas.
+- Import and export SRT or WebVTT subtitles in **Captions**. Edit individual text and cue timings, shift all captions, and apply shared caption styles. Captions also appear in the exported video.
+- Record a voiceover or capture the screen with optional microphone audio, review it, and add it to the project. Pause/resume, a recording timer, and microphone level feedback are available.
+- Detach a video's audio into an independently editable audio clip while muting the original video. Preview the three included original music tracks before adding them.
+- Export the current rendered frame as a PNG or insert a three-second freeze frame at the playhead. The freeze frame includes visible overlays and titles, and moves later timeline content and markers forward.
+- Choose 16:9, 9:16, 1:1, 4:3, 4:5, or 21:9 canvases and a canvas background color.
+- Keep multiple locally saved projects, search/open/duplicate/rename/delete them, and download or open project backups. Export video with audio as WebM or native MP4 when supported by the browser.
 
-The Effects and Filters libraries offer color presets. Transitions currently apply fades at the selected clip's start and end.
+The Effects and Filters libraries offer color presets. Transitions apply fades at the selected clip's start and end; a full transition compositing engine is not included.
 
 ## Projects and media
 
-The current project is automatically saved to IndexedDB in the current browser after edits. Reopening the application at the same origin restores that project. This is a single local working project, not a cloud project library. Browser site-data deletion or a different browser/origin will not retain it.
+Edits automatically save to IndexedDB in the current browser. **Menu → My projects** opens the local project library, including each project's media, timeline, and edits. Creating a new project preserves the previous one in that library. Existing installations retain their previous current project: it is migrated into the project library without replacing its edits.
 
-Use **Menu → Download project** or **Ctrl/Cmd + S** to download a `.capcut.json` backup. Use **Menu → Open project file** to restore it. This JSON format belongs to this application and is not compatible with official CapCut project files.
+Saved projects belong to this browser and origin. Clearing site data or using another browser/origin does not retain them. Use **Menu → Download project** or **Ctrl/Cmd + S** for a `.capcut.json` backup, and **Menu → Open project file** to restore it. This JSON format belongs to this application and is not compatible with official CapCut project files.
 
-Imported media are stored as data URLs inside the project, so backups include those imports. Bundled demo assets use local `/assets/` paths and remain available when the backup is opened in this application. Large imports increase memory use, project-file size, and browser-storage use; the UI reports a failed local save if browser storage fills up. Imported files are not uploaded to a server.
+Imported media and recordings are stored as data URLs inside the project, so backups include them. Bundled demo assets use local `/assets/` paths and remain available when the backup is opened in this application. Large imports increase memory use, project-file size, and browser-storage use; the UI reports a failed local save if browser storage fills up. Imported files, recordings, subtitles, and project edits stay local to the browser unless you download and share them yourself. They are not uploaded to a server; no cloud account, cloud sync, or AI transcription service is used.
 
-## Video export
+## Voice and screen recording
 
-Click **Export**, choose a resolution and frame rate, then click **Export video**. The browser renders the timeline to a canvas, mixes audio with the Web Audio API, and records a downloadable `.webm` file through MediaRecorder. Export includes clip transforms, color adjustments, text, stickers, fades, timing, speed, and audio volume.
+Open **Menu → Record voice or screen**, or use the record control above the player. Recording needs browser permission and a secure context such as HTTPS or localhost. Voice mode requests microphone access. Screen mode opens the browser's screen/window/tab picker and can include the microphone; system or tab audio is recorded only if the browser and selected source supply it and you choose to share it.
 
-Available settings are 720p, 1080p, or 1440p, at 24, 30, or 60 fps. The canvas aspect ratio determines the final dimensions. The exporter selects supported WebM codecs, preferring VP9/Opus and then VP8/Opus.
+Desktop Chrome or Edge generally provides the broadest screen-capture support. Availability, recording codecs, and screen-audio support depend on the browser and operating system. Denied permissions and unavailable APIs are reported in the recorder. Stop and review a recording before adding it; closing the recorder releases its active capture tracks.
 
-Export happens in real time: a 16-second project takes approximately 16 seconds plus setup. Keep the tab active until it finishes. Progress and cancellation are available. Actual frame delivery depends on device performance and browser scheduling; this is not an offline, frame-exact rendering engine. Use a recent Chrome, Edge, or Firefox with WebM recording support. Browsers without the necessary recording APIs display an error instead of a download.
+## Video and frame export
+
+Click **Export**, choose the available format, resolution, and frame rate, then click **Export video**. The browser renders the timeline to a canvas, mixes audio with the Web Audio API, and records a downloadable file through MediaRecorder. Export includes animation/keyframes, transforms, crop/fit/flips, color adjustments, text styling, captions, stickers, overlays, fades, timing, speed, and audio volume.
+
+Available settings are 720p, 1080p, or 1440p, at 24, 30, or 60 fps. The canvas aspect ratio determines the final dimensions. Format choices are detected from the browser's recording capabilities. WebM prefers VP9/Opus and then VP8/Opus. MP4 is offered only when native MP4 recording is supported; the actual codec depends on the browser, so an `.mp4` file is not guaranteed to contain H.264. There is no server-side transcoding or bundled FFmpeg conversion.
+
+Export happens in real time: a 16-second project takes approximately 16 seconds plus setup. Keep the tab active until it finishes. Progress and cancellation are available. Actual frame delivery depends on device performance and browser scheduling; this is not an offline, frame-exact rendering engine. Browsers without the required recording APIs display an error instead of a download. The player's camera button separately downloads the current composite as a PNG image.
 
 ## Keyboard shortcuts
 
@@ -55,6 +65,7 @@ Export happens in real time: a 16-second project takes approximately 16 seconds 
 | ------------------------------- | -------------------------- |
 | Play / pause                    | Space                      |
 | Split selected clip at playhead | S                          |
+| Add timeline marker             | M                          |
 | Delete selected clip            | Delete / Backspace         |
 | Undo                            | Ctrl/Cmd + Z               |
 | Redo                            | Ctrl/Cmd + Shift + Z       |
@@ -65,7 +76,7 @@ Export happens in real time: a 16-second project takes approximately 16 seconds 
 
 ## Current limits
 
-This implementation does not provide full CapCut feature parity. There is no AI transcription, automatic caption generation, cloud sync, account system, collaboration, background removal, keyframe animation, motion tracking, or MP4/H.264 export. Captions are editable text entered manually. Fades are supported; a full transition compositing engine is not included. Media import/playback depends on codecs supported by the browser. The interface is designed primarily for desktop editing.
+This implementation does not provide full CapCut feature parity. AI transcription, automatic speech recognition, cloud sync, accounts, collaboration, background removal, and motion tracking are not included. Captions are created manually or imported from SRT/WebVTT files. Keyframe motion uses linear interpolation. Media import, playback, recording, and export depend on browser codec/API support. The interface is designed primarily for desktop editing.
 
 ## Bundled asset credits
 

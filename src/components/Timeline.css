@@ -9,6 +9,11 @@
   color: #abb0b6;
   font-size: 11px;
   overflow: hidden;
+  transition: height 0.2s ease;
+}
+.timeline.has-overlay {
+  height: 320px;
+  min-height: 320px;
 }
 .tl-toolbar {
   height: 49px;
@@ -25,6 +30,17 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.tl-toolbar-group {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tl-toolbar-group > * {
+  flex-shrink: 0;
+}
+.tl-toolbar-end {
+  flex-shrink: 0;
 }
 .tl-tool {
   width: 30px;
@@ -171,6 +187,25 @@
 .tl-row-2 {
   height: 55px;
 }
+.tl-row-3 {
+  height: 46px;
+}
+.has-overlay .tl-row-0 {
+  height: 60px;
+}
+.has-overlay .tl-row-2 {
+  height: 49px;
+}
+.has-overlay .tl-clip-audio {
+  height: calc(100% - 14px);
+}
+.tl-row-3 .tl-clip {
+  border-color: #77709c;
+  background: #484361;
+}
+.tl-row-3 .tl-clip.selected {
+  border-color: #27dfca;
+}
 .tl-scroll {
   flex: 1;
   overflow-x: auto;
@@ -223,6 +258,127 @@
   font-size: 9px;
   letter-spacing: 0.3px;
   color: #8e969e;
+}
+.tl-marker {
+  position: absolute;
+  top: 19px;
+  width: 16px;
+  height: 17px;
+  transform: translateX(-8px);
+  z-index: 6;
+  border: 0;
+  padding: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+.tl-marker > span {
+  display: block;
+  width: 9px;
+  height: 9px;
+  background: var(--marker-color, #f3bf63);
+  border: 1px solid #ffffff7a;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  box-shadow: 0 0 0 1px #111;
+}
+.tl-marker:hover > span {
+  filter: brightness(1.3);
+}
+.tl-marker-editor {
+  position: absolute;
+  top: 3px;
+  z-index: 10;
+  width: 232px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid #474c51;
+  border-radius: 9px;
+  background: #24272b;
+  box-shadow: 0 8px 30px #0008;
+  cursor: default;
+  color: #c4cbd0;
+}
+.tl-marker-editor-title,
+.tl-marker-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tl-marker-editor-title strong {
+  font-size: 11px;
+  color: #f0f2f5;
+}
+.tl-marker-editor button {
+  border: 0;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #bdc5cd;
+  background: #32373d;
+  cursor: pointer;
+  font-size: 10px;
+}
+.tl-marker-editor-title button {
+  padding: 3px;
+  background: transparent;
+}
+.tl-marker-editor label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+}
+.tl-marker-editor input {
+  min-width: 0;
+  width: 136px;
+  height: 27px;
+  padding: 3px 7px;
+  border: 1px solid #454a51;
+  border-radius: 5px;
+  background: #181b1f;
+  color: #e6edf3;
+  font-size: 11px;
+}
+.tl-marker-colors {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px;
+}
+.tl-marker-colors button {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+.tl-marker-colors button[aria-pressed="true"] {
+  outline: 1px solid #e8eef5;
+  outline-offset: 2px;
+}
+.tl-marker-editor-actions button {
+  height: 27px;
+  padding: 0 8px;
+}
+.tl-marker-editor-actions .tl-marker-save {
+  color: #102b28;
+  background: #29dbc8;
+  font-weight: 600;
+}
+.tl-marker-editor-actions .tl-marker-delete {
+  color: #eca6ae;
+  background: transparent;
+  padding-left: 0;
+}
+.tl-marker:focus-visible,
+.tl-marker-editor button:focus-visible,
+.tl-marker-editor input:focus-visible {
+  outline: 2px solid #27dfca;
+  outline-offset: 2px;
 }
 .tl-track {
   position: relative;

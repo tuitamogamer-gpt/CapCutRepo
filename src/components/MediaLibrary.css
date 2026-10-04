@@ -701,3 +701,49 @@
     padding-right: 15px;
   }
 }
+.library-record {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px;
+  margin-top: 7px;
+  border: 1px solid #363d41;
+  border-radius: 5px;
+  background: #252c2e;
+  color: #b4c9c5;
+  font-size: 10px;
+}
+.library-record:hover {
+  background: #30423f;
+  color: #4ee3ce;
+}
+.library-record + .library-import-hint {
+  margin: 7px 0 14px;
+}
+.media-card-label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 6px;
+}
+.media-card-label .media-card-name {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+.media-card-label > button {
+  padding: 3px;
+  flex-shrink: 0;
+  color: #799b94;
+  border-radius: 3px;
+  display: flex;
+}
+.media-card-label > button:hover {
+  background: #2d4540;
+  color: #4de8d3;
+}
+.audio-record {
+  margin: 0 0 10px;
+}

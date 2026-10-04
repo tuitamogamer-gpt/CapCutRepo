@@ -1148,3 +1148,49 @@ svg {
     z-index: 17;
   }
 }
+.player-tools {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  margin-right: 14px;
+}
+.player-tools .icon-button {
+  width: 25px;
+  height: 25px;
+  color: #859a96;
+}
+.player-tools .icon-button.active {
+  color: #33e0ca;
+  background: #253d38;
+}
+.quality-label {
+  white-space: nowrap;
+}
+.project-library-modal {
+  width: 700px;
+}
+.export-note {
+  line-height: 1.7;
+}
+@media (max-width: 1190px) {
+  .player-tools {
+    gap: 0;
+    margin-right: 4px;
+  }
+  .quality-label {
+    display: none;
+  }
+}
+@media (max-width: 780px) {
+  .player-tools {
+    margin-left: 0;
+    margin-right: 5px;
+  }
+  .mobile-properties-button {
+    order: 3;
+  }
+  .project-library-modal {
+    width: min(700px, 95vw);
+  }
+}

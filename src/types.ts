@@ -8,6 +8,22 @@ export interface Asset {
   duration: number;
   category?: string;
 }
+export type AnimationPreset =
+  "none" | "zoom-in" | "zoom-out" | "pan-left" | "pan-right" | "rise";
+export interface TransformKeyframe {
+  time: number;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+  opacity: number;
+}
+export interface TimelineMarker {
+  id: string;
+  time: number;
+  label: string;
+  color: string;
+}
 export interface Clip {
   id: string;
   assetId?: string;
@@ -37,8 +53,21 @@ export interface Clip {
   filter: string;
   fadeIn: number;
   fadeOut: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  fit?: "cover" | "contain";
+  crop?: { top: number; right: number; bottom: number; left: number };
+  animation?: AnimationPreset;
+  keyframes?: TransformKeyframe[];
+  textAlign?: "left" | "center" | "right";
+  textBackground?: string;
+  textStroke?: number;
+  lineSpacing?: number;
+  isCaption?: boolean;
 }
 export interface Project {
+  id?: string;
+  markers?: TimelineMarker[];
   name: string;
   clips: Clip[];
   assets: Asset[];

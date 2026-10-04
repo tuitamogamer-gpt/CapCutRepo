@@ -2,6 +2,13 @@ import { useId, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Diamond,
+  FlipHorizontal2,
+  FlipVertical2,
+  Plus,
+  Trash2,
   Bold,
   Check,
   ChevronDown,
@@ -16,7 +23,8 @@ import {
   VolumeX,
 } from "lucide-react";
 import { FILTERS, formatTime } from "../types";
-import type { Clip } from "../types";
+import type { AnimationPreset, Clip, TransformKeyframe } from "../types";
+import { clipTransformAt, evaluateClip, sliceKeyframes } from "../animation";
 import "./Inspector.css";
 
 interface InspectorProps {
@@ -25,6 +33,10 @@ interface InspectorProps {
   aspectRatio: string;
   onAspectRatio: (ratio: string) => void;
   onReset: () => void;
+  currentTime?: number;
+  onSeek?: (time: number) => void;
+  background?: string;
+  onBackground?: (color: string) => void;
 }
 
 function SliderField({
@@ -163,6 +175,10 @@ export default function Inspector({
   aspectRatio,
   onAspectRatio,
   onReset,
+  currentTime = clip?.start ?? 0,
+  onSeek,
+  background = "#111111",
+  onBackground,
 }: InspectorProps) {
   const [tab, setTab] = useState("Video");
   const [videoTab, setVideoTab] = useState("Basic");
@@ -176,6 +192,106 @@ export default function Inspector({
       : tab === "Video" || tab === "Text"
         ? visualTab
         : tab;
+  const sampled = clip ? evaluateClip(clip, currentTime) : null;
+  const localTime = clip
+    ? Math.max(0, Math.min(clip.duration, currentTime - clip.start))
+    : 0;
+  const currentKeyframe = clip?.keyframes?.find(
+    (frame) => Math.abs(frame.time - localTime) < 1 / 60,
+  );
+  const setKeyframe = (patch: Partial<TransformKeyframe> = {}) => {
+    if (!clip) return;
+    const frame = {
+      ...clipTransformAt(clip, currentTime),
+      ...patch,
+      time: currentKeyframe?.time ?? localTime,
+    };
+    const frames = clip.keyframes?.length
+      ? clip.keyframes
+      : (sliceKeyframes(clip, 0, clip.duration) ?? []);
+    onChange({
+      animation: "none",
+      keyframes: [
+        ...frames.filter((item) => Math.abs(item.time - frame.time) >= 1 / 60),
+        frame,
+      ].sort((a, b) => a.time - b.time),
+    });
+  };
+  const commitTransform = (
+    patch: Partial<
+      Pick<TransformKeyframe, "x" | "y" | "scale" | "rotation" | "opacity">
+    >,
+  ) => {
+    if (!clip) return;
+    if (clip.keyframes?.length || (clip.animation && clip.animation !== "none"))
+      setKeyframe(patch);
+    else onChange(patch);
+  };
+  const removeKeyframe = (time: number) => {
+    if (!clip || !sampled) return;
+    const keyframes = clip.keyframes?.filter((frame) => frame.time !== time);
+    onChange({
+      keyframes,
+      x: sampled.x,
+      y: sampled.y,
+      scale: sampled.scale,
+      rotation: sampled.rotation,
+      opacity: sampled.opacity,
+    });
+  };
+  const transformControls = clip && sampled && (
+    <>
+      <SliderField
+        label="Scale"
+        value={Math.round(sampled.scale * 100) / 100}
+        min={10}
+        max={300}
+        onChange={(scale) => commitTransform({ scale })}
+      />
+      <div className="inspector-property-row">
+        <span className="inspector-field-label">Position</span>
+        <button
+          className="inspector-icon-button"
+          aria-label="Center clip"
+          title="Center clip"
+          onClick={() => commitTransform({ x: 0, y: 0 })}
+        >
+          <AlignCenter size={14} />
+        </button>
+      </div>
+      <div className="inspector-position">
+        <NumberField
+          label="X"
+          value={sampled.x}
+          onChange={(x) => commitTransform({ x })}
+        />
+        <NumberField
+          label="Y"
+          value={sampled.y}
+          onChange={(y) => commitTransform({ y })}
+        />
+      </div>
+      <div className="inspector-rotation">
+        <span className="inspector-field-label">Rotate</span>
+        <NumberField
+          label="Rotation"
+          value={sampled.rotation}
+          unit="°"
+          onChange={(rotation) => commitTransform({ rotation })}
+        />
+        <button
+          className="inspector-style-button"
+          aria-label="Rotate 90 degrees"
+          title="Rotate 90 degrees"
+          onClick={() =>
+            commitTransform({ rotation: (sampled.rotation + 90) % 360 })
+          }
+        >
+          <RotateCw size={14} />
+        </button>
+      </div>
+    </>
+  );
   const ratioControl = (
     <div className="inspector-ratio-grid">
       {["16:9", "9:16", "1:1", "4:3", "4:5", "21:9"].map((ratio) => (
@@ -188,6 +304,19 @@ export default function Inspector({
           {ratio}
         </button>
       ))}
+    </div>
+  );
+  const backgroundControl = onBackground && (
+    <div className="inspector-property-row">
+      <span className="inspector-field-label">Canvas background</span>
+      <label className="inspector-color" title="Canvas background color">
+        <input
+          type="color"
+          aria-label="Canvas background color"
+          value={background}
+          onChange={(event) => onBackground(event.target.value)}
+        />
+      </label>
     </div>
   );
   const resetButton = (
@@ -240,6 +369,7 @@ export default function Inspector({
           <Section title="Project settings">
             <div className="inspector-field-label">Aspect ratio</div>
             {ratioControl}
+            {backgroundControl}
             <p className="inspector-hint">
               Choose the perfect frame for your story.
             </p>
@@ -250,8 +380,8 @@ export default function Inspector({
           {(activeTab === "Video" || activeTab === "Text") && (
             <div className="inspector-subtabs">
               {(activeTab === "Text"
-                ? ["Basic", "Effects"]
-                : ["Basic", "Adjust", "Effects"]
+                ? ["Basic", "Effects", "Animation"]
+                : ["Basic", "Adjust", "Effects", "Animation"]
               ).map((item) => (
                 <button
                   key={item}
@@ -344,69 +474,184 @@ export default function Inspector({
                             />
                           </label>
                         </div>
+                        <div className="inspector-property-row">
+                          <span className="inspector-field-label">
+                            Alignment
+                          </span>
+                          <div className="inspector-button-group">
+                            {(["left", "center", "right"] as const).map(
+                              (textAlign) => (
+                                <button
+                                  key={textAlign}
+                                  className={`inspector-style-button ${(clip.textAlign ?? "center") === textAlign ? "is-selected" : ""}`}
+                                  aria-label={`Align text ${textAlign}`}
+                                  aria-pressed={
+                                    (clip.textAlign ?? "center") === textAlign
+                                  }
+                                  onClick={() => onChange({ textAlign })}
+                                >
+                                  {textAlign === "left" ? (
+                                    <AlignLeft size={14} />
+                                  ) : textAlign === "center" ? (
+                                    <AlignCenter size={14} />
+                                  ) : (
+                                    <AlignRight size={14} />
+                                  )}
+                                </button>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                        <div className="inspector-property-row">
+                          <span className="inspector-field-label">
+                            Background
+                          </span>
+                          <div className="inspector-button-group">
+                            <label
+                              className="inspector-color"
+                              title="Text background"
+                            >
+                              <input
+                                type="color"
+                                aria-label="Text background color"
+                                value={
+                                  clip.textBackground &&
+                                  clip.textBackground !== "transparent"
+                                    ? clip.textBackground
+                                    : "#000000"
+                                }
+                                onChange={(event) =>
+                                  onChange({
+                                    textBackground: event.target.value,
+                                  })
+                                }
+                              />
+                            </label>
+                            <button
+                              className="inspector-secondary-button"
+                              onClick={() =>
+                                onChange({ textBackground: "transparent" })
+                              }
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+                        <SliderField
+                          label="Text outline"
+                          value={clip.textStroke ?? 0}
+                          min={0}
+                          max={12}
+                          unit="px"
+                          onChange={(textStroke) => onChange({ textStroke })}
+                        />
+                        <SliderField
+                          label="Line spacing"
+                          value={clip.lineSpacing ?? 1.2}
+                          min={0.8}
+                          max={2.5}
+                          step={0.05}
+                          unit="×"
+                          onChange={(lineSpacing) => onChange({ lineSpacing })}
+                        />
                       </Section>
                     )}
                     <Section
                       title="Transform"
                       action={activeTab === "Video" ? resetButton : undefined}
                     >
-                      <SliderField
-                        label="Scale"
-                        value={clip.scale}
-                        min={10}
-                        max={300}
-                        onChange={(scale) => onChange({ scale })}
-                      />
+                      {transformControls}
                       <div className="inspector-property-row">
-                        <span className="inspector-field-label">Position</span>
-                        <button
-                          className="inspector-icon-button"
-                          aria-label="Center clip"
-                          title="Center clip"
-                          onClick={() => onChange({ x: 0, y: 0 })}
-                        >
-                          <AlignCenter size={14} />
-                        </button>
+                        <span className="inspector-field-label">Flip</span>
+                        <div className="inspector-button-group">
+                          <button
+                            className={`inspector-style-button ${clip.flipX ? "is-selected" : ""}`}
+                            aria-label="Flip horizontal"
+                            aria-pressed={!!clip.flipX}
+                            onClick={() => onChange({ flipX: !clip.flipX })}
+                          >
+                            <FlipHorizontal2 size={15} />
+                          </button>
+                          <button
+                            className={`inspector-style-button ${clip.flipY ? "is-selected" : ""}`}
+                            aria-label="Flip vertical"
+                            aria-pressed={!!clip.flipY}
+                            onClick={() => onChange({ flipY: !clip.flipY })}
+                          >
+                            <FlipVertical2 size={15} />
+                          </button>
+                        </div>
                       </div>
-                      <div className="inspector-position">
-                        <NumberField
-                          label="X"
-                          value={clip.x}
-                          onChange={(x) => onChange({ x })}
-                        />
-                        <NumberField
-                          label="Y"
-                          value={clip.y}
-                          onChange={(y) => onChange({ y })}
-                        />
-                      </div>
-                      <div className="inspector-rotation">
-                        <span className="inspector-field-label">Rotate</span>
-                        <NumberField
-                          label="Rotation"
-                          value={clip.rotation}
-                          unit="°"
-                          onChange={(rotation) => onChange({ rotation })}
-                        />
-                        <button
-                          className="inspector-style-button"
-                          aria-label="Rotate 90 degrees"
-                          title="Rotate 90 degrees"
-                          onClick={() =>
-                            onChange({ rotation: (clip.rotation + 90) % 360 })
-                          }
-                        >
-                          <RotateCw size={14} />
-                        </button>
-                      </div>
+                      {!!clip.keyframes?.length && (
+                        <p className="inspector-hint inspector-accent-hint">
+                          <Diamond size={11} /> Changes create a keyframe at{" "}
+                          {localTime.toFixed(2)}s.
+                        </p>
+                      )}
                     </Section>
                     <Section title="Blend">
                       <SliderField
                         label="Opacity"
-                        value={clip.opacity}
-                        onChange={(opacity) => onChange({ opacity })}
+                        value={
+                          Math.round((sampled?.opacity ?? clip.opacity) * 100) /
+                          100
+                        }
+                        onChange={(opacity) => commitTransform({ opacity })}
                       />
                     </Section>
+                    {(clip.type === "video" || clip.type === "image") && (
+                      <Section title="Crop & fit" initialOpen={false}>
+                        <div className="inspector-segmented">
+                          {(["cover", "contain"] as const).map((fit) => (
+                            <button
+                              key={fit}
+                              className={
+                                (clip.fit ?? "cover") === fit
+                                  ? "is-selected"
+                                  : ""
+                              }
+                              aria-pressed={(clip.fit ?? "cover") === fit}
+                              onClick={() => onChange({ fit })}
+                            >
+                              {fit === "cover" ? "Fill frame" : "Fit in frame"}
+                            </button>
+                          ))}
+                        </div>
+                        {(["top", "right", "bottom", "left"] as const).map(
+                          (side) => (
+                            <SliderField
+                              key={side}
+                              label={`Crop ${side}`}
+                              value={clip.crop?.[side] ?? 0}
+                              min={0}
+                              max={45}
+                              onChange={(value) =>
+                                onChange({
+                                  crop: {
+                                    top: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    left: 0,
+                                    ...clip.crop,
+                                    [side]: value,
+                                  },
+                                })
+                              }
+                            />
+                          ),
+                        )}
+                        <button
+                          className="inspector-secondary-button"
+                          onClick={() =>
+                            onChange({
+                              crop: { top: 0, right: 0, bottom: 0, left: 0 },
+                            })
+                          }
+                        >
+                          Reset crop
+                        </button>
+                      </Section>
+                    )}
                     <Section title="Canvas">
                       <div className="inspector-property-row">
                         <span className="inspector-field-label">
@@ -417,6 +662,116 @@ export default function Inspector({
                         </span>
                       </div>
                       {ratioControl}
+                      {backgroundControl}
+                    </Section>
+                  </>
+                )}
+                {videoTab === "Animation" && (
+                  <>
+                    <Section title="Motion presets">
+                      <div className="inspector-motion-grid">
+                        {(
+                          [
+                            ["none", "None", "—"],
+                            ["zoom-in", "Zoom in", "↗"],
+                            ["zoom-out", "Zoom out", "↙"],
+                            ["pan-left", "Pan left", "←"],
+                            ["pan-right", "Pan right", "→"],
+                            ["rise", "Rise", "↑"],
+                          ] as [AnimationPreset, string, string][]
+                        ).map(([animation, label, symbol]) => (
+                          <button
+                            key={animation}
+                            aria-pressed={
+                              (clip.animation ?? "none") === animation &&
+                              !clip.keyframes?.length
+                            }
+                            className={
+                              (clip.animation ?? "none") === animation &&
+                              !clip.keyframes?.length
+                                ? "is-selected"
+                                : ""
+                            }
+                            onClick={() =>
+                              onChange({ animation, keyframes: undefined })
+                            }
+                          >
+                            <span aria-hidden="true">{symbol}</span>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="inspector-hint">
+                        Motion runs across the full clip. Choosing a preset
+                        replaces custom keyframes.
+                      </p>
+                    </Section>
+                    <Section
+                      title="Keyframes"
+                      action={
+                        <span className="inspector-keyframe-count">
+                          {clip.keyframes?.length ?? 0}
+                        </span>
+                      }
+                    >
+                      <div className="inspector-keyframe-time">
+                        <span>Playhead in clip</span>
+                        <strong>{localTime.toFixed(2)}s</strong>
+                      </div>
+                      <button
+                        className="inspector-primary-button"
+                        onClick={() => setKeyframe()}
+                      >
+                        <Plus size={13} />
+                        {currentKeyframe ? "Update keyframe" : "Add keyframe"}
+                      </button>
+                      {!!clip.keyframes?.length && (
+                        <div className="inspector-keyframe-list">
+                          {[...clip.keyframes]
+                            .sort((a, b) => a.time - b.time)
+                            .map((frame, index) => (
+                              <div
+                                key={frame.time}
+                                className={`inspector-keyframe-row ${Math.abs(frame.time - localTime) < 1 / 60 ? "is-current" : ""}`}
+                              >
+                                <button
+                                  onClick={() =>
+                                    onSeek?.(clip.start + frame.time)
+                                  }
+                                  disabled={!onSeek}
+                                  aria-label={`Go to keyframe ${index + 1} at ${frame.time.toFixed(2)} seconds`}
+                                >
+                                  <Diamond size={11} />
+                                  <span>Keyframe {index + 1}</span>
+                                  <strong>{frame.time.toFixed(2)}s</strong>
+                                </button>
+                                <button
+                                  className="inspector-icon-button"
+                                  aria-label={`Delete keyframe ${index + 1}`}
+                                  title="Delete keyframe"
+                                  onClick={() => removeKeyframe(frame.time)}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                      <p className="inspector-hint">
+                        Move the playhead, then adjust the transform. Position,
+                        scale, rotation and opacity animate between keyframes.
+                      </p>
+                    </Section>
+                    <Section title="Transform at playhead">
+                      {transformControls}
+                      <SliderField
+                        label="Opacity"
+                        value={
+                          Math.round((sampled?.opacity ?? clip.opacity) * 100) /
+                          100
+                        }
+                        onChange={(opacity) => commitTransform({ opacity })}
+                      />
                     </Section>
                   </>
                 )}
@@ -536,6 +891,34 @@ export default function Inspector({
                     </p>
                   )}
                 </Section>
+                {(clip.type === "audio" || clip.type === "video") && (
+                  <Section title="Audio fades">
+                    <SliderField
+                      label="Audio fade in"
+                      unit="s"
+                      min={0}
+                      max={Math.min(10, clip.duration / 2)}
+                      step={0.1}
+                      value={clip.fadeIn}
+                      onChange={(fadeIn) => onChange({ fadeIn })}
+                    />
+                    <SliderField
+                      label="Audio fade out"
+                      unit="s"
+                      min={0}
+                      max={Math.min(10, clip.duration / 2)}
+                      step={0.1}
+                      value={clip.fadeOut}
+                      onChange={(fadeOut) => onChange({ fadeOut })}
+                    />
+                    <p className="inspector-hint">
+                      Ease sound in and out at the clip edges.
+                      {clip.type === "video"
+                        ? " Fades also apply to the video."
+                        : ""}
+                    </p>
+                  </Section>
+                )}
               </>
             )}
             {activeTab === "Speed" && (

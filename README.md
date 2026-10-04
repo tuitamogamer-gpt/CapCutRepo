@@ -1,4 +1,4 @@
-# CapCut Studio
+# CapCutRepo — CapCut Studio
 
 A CapCut-inspired video editor built with React, TypeScript, and Vite. It runs entirely in the browser and opens with a 16-second travel project containing photos, a title, and original music. This is an independent implementation; it is not an official CapCut product.
 
